@@ -1,0 +1,304 @@
+// Lyceum of Alcala Portal - Database Schema
+// Supports Grades 7-12 with quarterly grading and senior high strands
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// Authentication & Users
+// ============================================================================
+
+enum Role {
+  STUDENT
+  TEACHER
+  ADMIN
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  firebaseUid   String    @unique // Firebase Auth UID
+  role          Role
+  isActive      Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  student       Student?
+  teacher       Teacher?
+  announcements Announcement[]
+  auditLogs     AuditLog[]
+
+  @@index([email])
+  @@index([firebaseUid])
+}
+
+// ============================================================================
+// Student & Teacher Profiles
+// ============================================================================
+
+model Student {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  lrn             String    @unique // Learner Reference Number
+  firstName       String
+  middleName      String?
+  lastName        String
+  suffix          String?
+  birthdate       DateTime
+  sex             String    // M or F
+  
+  // Guardian information
+  guardianName    String
+  guardianContact String
+  guardianEmail   String?
+  address         String
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enrollments     StudentSection[]
+
+  @@index([lrn])
+  @@index([lastName, firstName])
+}
+
+model Teacher {
+  id              String    @id @default(cuid())
+  userId          String    @unique
+  firstName       String
+  middleName      String?
+  lastName        String
+  suffix          String?
+  department      String?
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  // Relations
+  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  advisorySections Section[]        @relation("SectionAdviser")
+  assignments     SectionSubject[]
+
+  @@index([lastName, firstName])
+}
+
+// ============================================================================
+// Academic Structure
+// ============================================================================
+
+model SchoolYear {
+  id          String    @id @default(cuid())
+  label       String    @unique // e.g., "2024-2025"
+  startDate   DateTime
+  endDate     DateTime
+  isCurrent   Boolean   @default(false)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  // Relations
+  sections    Section[]
+
+  @@index([isCurrent])
+}
+
+model GradeLevel {
+  id          String    @id @default(cuid())
+  number      Int       @unique // 7, 8, 9, 10, 11, 12
+  name        String    // e.g., "Grade 7", "Grade 11"
+  isSeniorHigh Boolean  @default(false) // true for 11-12
+  createdAt   DateTime  @default(now())
+
+  // Relations
+  sections    Section[]
+  subjects    Subject[]
+
+  @@index([number])
+}
+
+model Strand {
+  id          String    @id @default(cuid())
+  code        String    @unique // STEM, ABM, HUMSS, GAS, TVL, etc.
+  name        String    // Full name
+  description String?
+  createdAt   DateTime  @default(now())
+
+  // Relations
+  sections    Section[]
+  subjects    Subject[]
+}
+
+model Section {
+  id            String    @id @default(cuid())
+  name          String    // e.g., "7-Einstein", "11-STEM-A"
+  gradeLevelId  String
+  strandId      String?   // null for junior high (grades 7-10)
+  adviserId     String?
+  schoolYearId  String
+  capacity      Int       @default(40)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  // Relations
+  gradeLevel    GradeLevel         @relation(fields: [gradeLevelId], references: [id])
+  strand        Strand?            @relation(fields: [strandId], references: [id])
+  adviser       Teacher?           @relation("SectionAdviser", fields: [adviserId], references: [id])
+  schoolYear    SchoolYear         @relation(fields: [schoolYearId], references: [id])
+  students      StudentSection[]
+  subjects      SectionSubject[]
+
+  @@unique([name, schoolYearId])
+  @@index([schoolYearId])
+  @@index([gradeLevelId])
+  @@index([strandId])
+}
+
+enum SubjectCategory {
+  CORE          // Required for all
+  APPLIED       // Applied/contextualized subjects
+  SPECIALIZED   // Track/strand-specific
+}
+
+model Subject {
+  id            String          @id @default(cuid())
+  code          String          @unique // e.g., "ENG7", "GEN-MATH"
+  title         String
+  gradeLevelId  String
+  strandId      String?         // null if available to all strands
+  semester      Int?            // 1 or 2, only for senior high
+  category      SubjectCategory @default(CORE)
+  units         Int?            // For college credit compatibility
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+
+  // Relations
+  gradeLevel    GradeLevel       @relation(fields: [gradeLevelId], references: [id])
+  strand        Strand?          @relation(fields: [strandId], references: [id])
+  sections      SectionSubject[]
+
+  @@index([code])
+  @@index([gradeLevelId])
+  @@index([strandId])
+}
+
+// ============================================================================
+// Enrollment & Assignment
+// ============================================================================
+
+model StudentSection {
+  id          String    @id @default(cuid())
+  studentId   String
+  sectionId   String
+  enrolledAt  DateTime  @default(now())
+
+  // Relations
+  student     Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  section     Section   @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  grades      Grade[]
+
+  @@unique([studentId, sectionId])
+  @@index([studentId])
+  @@index([sectionId])
+}
+
+model SectionSubject {
+  id          String    @id @default(cuid())
+  sectionId   String
+  subjectId   String
+  teacherId   String
+  createdAt   DateTime  @default(now())
+
+  // Relations
+  section     Section   @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  subject     Subject   @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacher     Teacher   @relation(fields: [teacherId], references: [id])
+  grades      Grade[]
+
+  @@unique([sectionId, subjectId])
+  @@index([sectionId])
+  @@index([subjectId])
+  @@index([teacherId])
+}
+
+// ============================================================================
+// Grading
+// ============================================================================
+
+model Grade {
+  id                String    @id @default(cuid())
+  studentSectionId  String
+  sectionSubjectId  String
+  quarter           Int       // 1, 2, 3, 4
+  score             Decimal   @db.Decimal(5, 2) // e.g., 88.50
+  remarks           String?   // PASSED, FAILED, INC, etc.
+  locked            Boolean   @default(false)
+  encodedAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  // Relations
+  studentSection    StudentSection  @relation(fields: [studentSectionId], references: [id], onDelete: Cascade)
+  sectionSubject    SectionSubject  @relation(fields: [sectionSubjectId], references: [id], onDelete: Cascade)
+
+  @@unique([studentSectionId, sectionSubjectId, quarter])
+  @@index([studentSectionId])
+  @@index([sectionSubjectId])
+  @@index([locked])
+}
+
+// ============================================================================
+// Communication & Audit
+// ============================================================================
+
+enum AnnouncementAudience {
+  ALL
+  STUDENTS
+  TEACHERS
+  SECTION // Specific section
+  GRADE_LEVEL
+}
+
+model Announcement {
+  id          String                @id @default(cuid())
+  authorId    String
+  title       String
+  body        String
+  audience    AnnouncementAudience  @default(ALL)
+  targetId    String?               // section or grade level ID if applicable
+  isPinned    Boolean               @default(false)
+  createdAt   DateTime              @default(now())
+  updatedAt   DateTime              @updatedAt
+
+  // Relations
+  author      User                  @relation(fields: [authorId], references: [id])
+
+  @@index([audience])
+  @@index([createdAt])
+  @@index([isPinned])
+}
+
+model AuditLog {
+  id          String    @id @default(cuid())
+  userId      String
+  action      String    // CREATE, UPDATE, DELETE, LOCK, UNLOCK
+  entity      String    // Grade, Student, Section, etc.
+  entityId    String
+  before      Json?     // Previous state
+  after       Json?     // New state
+  ipAddress   String?
+  createdAt   DateTime  @default(now())
+
+  // Relations
+  user        User      @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([entity])
+  @@index([createdAt])
+}
