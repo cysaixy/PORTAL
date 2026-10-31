@@ -2,8 +2,16 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 
+const DEV_MODE = import.meta.env.VITE_DEV_MODE === 'true';
+
+const TEST_ACCOUNTS = [
+  { email: 'testadmin@gmail.com', role: 'Admin', color: 'red' },
+  { email: 'testteacher@gmail.com', role: 'Teacher', color: 'blue' },
+  { email: 'teststudent@gmail.com', role: 'Student', color: 'green' },
+];
+
 export default function LoginPage() {
-  const { user, signInWithGoogle, loading } = useAuth();
+  const { user, signInWithGoogle, devModeLogin, loading } = useAuth();
   const navigate = useNavigate();
   const [error, setError] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
@@ -13,6 +21,19 @@ export default function LoginPage() {
       navigate('/');
     }
   }, [user, navigate]);
+
+  const handleDevModeLogin = async (email: string) => {
+    setError(null);
+    setIsSigningIn(true);
+    
+    try {
+      await devModeLogin(email);
+    } catch (err: any) {
+      setError(err.message || 'Failed to sign in. Please try again.');
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
 
   const handleGoogleSignIn = async () => {
     setError(null);
@@ -63,12 +84,54 @@ export default function LoginPage() {
             <h1 className="text-3xl font-bold text-gray-900">LOA Portal</h1>
             <p className="mt-2 text-sm text-gray-600">Lyceum of Alcala</p>
             <p className="mt-1 text-xs text-gray-500">Student Project - Unofficial</p>
+            {DEV_MODE && (
+              <div className="mt-2 inline-block px-3 py-1 bg-yellow-100 text-yellow-800 text-xs rounded-full">
+                🔧 Development Mode
+              </div>
+            )}
           </div>
 
           {/* Error Message */}
           {error && (
             <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
               <p className="text-sm text-red-800">{error}</p>
+            </div>
+          )}
+
+          {/* Dev Mode Test Accounts */}
+          {DEV_MODE && (
+            <div className="mb-6">
+              <p className="text-sm text-gray-700 mb-3 font-medium">Login as:</p>
+              <div className="space-y-2">
+                {TEST_ACCOUNTS.map((account) => (
+                  <button
+                    key={account.email}
+                    onClick={() => handleDevModeLogin(account.email)}
+                    disabled={isSigningIn}
+                    className="w-full flex items-center justify-between px-4 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className={`w-2 h-2 rounded-full bg-${account.color}-500`}></div>
+                      <div className="text-left">
+                        <div className="text-sm font-medium text-gray-900">{account.role}</div>
+                        <div className="text-xs text-gray-500">{account.email}</div>
+                      </div>
+                    </div>
+                    <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                    </svg>
+                  </button>
+                ))}
+              </div>
+              
+              <div className="relative my-6">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-gray-300"></div>
+                </div>
+                <div className="relative flex justify-center text-sm">
+                  <span className="px-2 bg-white text-gray-500">Or</span>
+                </div>
+              </div>
             </div>
           )}
 
@@ -103,7 +166,9 @@ export default function LoginPage() {
                     d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
                   />
                 </svg>
-                <span className="text-sm font-medium text-gray-700">Sign in with Google</span>
+                <span className="text-sm font-medium text-gray-700">
+                  {DEV_MODE ? 'Sign in with Google (Production)' : 'Sign in with Google'}
+                </span>
               </>
             )}
           </button>
@@ -111,11 +176,16 @@ export default function LoginPage() {
           {/* Info */}
           <div className="mt-6 text-center">
             <p className="text-xs text-gray-500">
-              Only registered email addresses can access this portal.
+              {DEV_MODE 
+                ? 'Development mode: Use test accounts above or sign in with Google'
+                : 'Only registered email addresses can access this portal.'
+              }
             </p>
-            <p className="text-xs text-gray-500 mt-1">
-              Contact the administrator if you need access.
-            </p>
+            {!DEV_MODE && (
+              <p className="text-xs text-gray-500 mt-1">
+                Contact the administrator if you need access.
+              </p>
+            )}
           </div>
         </div>
 

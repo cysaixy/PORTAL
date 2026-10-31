@@ -54,6 +54,10 @@ model Student {
   birthdate       DateTime
   sex             String    // M or F
   
+  // ID and Signature
+  photoUrl        String?   // URL or path to student photo
+  signatureUrl    String?   // URL or path to student signature
+  
   // Guardian information
   guardianName    String
   guardianContact String
@@ -79,6 +83,10 @@ model Teacher {
   lastName        String
   suffix          String?
   department      String?
+  
+  // ID and Signature
+  photoUrl        String?   // URL or path to teacher photo
+  signatureUrl    String?   // URL or path to teacher signature
   
   createdAt       DateTime  @default(now())
   updatedAt       DateTime  @updatedAt

@@ -15,9 +15,12 @@ interface AuthContextType {
   loading: boolean;
   signInWithGoogle: () => Promise<void>;
   signOut: () => Promise<void>;
+  devModeLogin: (email: string) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+const DEV_MODE = import.meta.env.VITE_DEV_MODE === 'true';
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
@@ -25,6 +28,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // DEV MODE: Skip Firebase and check localStorage
+    if (DEV_MODE) {
+      const savedEmail = localStorage.getItem('dev_user_email');
+      if (savedEmail) {
+        // Set custom header for API client
+        api.defaults.headers.common['x-test-user'] = savedEmail;
+        
+        // Fetch user from backend
+        api.get('/auth/me')
+          .then(response => setUser(response.data.user))
+          .catch(() => setUser(null))
+          .finally(() => setLoading(false));
+      } else {
+        setLoading(false);
+      }
+      return;
+    }
+
+    // PRODUCTION: Use Firebase
     const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
       setFirebaseUser(firebaseUser);
 
@@ -84,8 +106,31 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } catch (error) {
       console.error('Logout API call failed:', error);
     } finally {
-      await firebaseSignOut(auth);
+      if (DEV_MODE) {
+        localStorage.removeItem('dev_user_email');
+        delete api.defaults.headers.common['x-test-user'];
+      } else {
+        await firebaseSignOut(auth);
+      }
       setUser(null);
+    }
+  };
+
+  const devModeLogin = async (email: string) => {
+    try {
+      setLoading(true);
+      localStorage.setItem('dev_user_email', email);
+      api.defaults.headers.common['x-test-user'] = email;
+      
+      const response = await api.get('/auth/me');
+      setUser(response.data.user);
+    } catch (error: any) {
+      console.error('Dev mode login failed:', error);
+      localStorage.removeItem('dev_user_email');
+      delete api.defaults.headers.common['x-test-user'];
+      throw new Error('Login failed. User not found.');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -97,6 +142,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         loading,
         signInWithGoogle,
         signOut,
+        devModeLogin,
       }}
     >
       {children}

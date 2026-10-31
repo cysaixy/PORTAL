@@ -23,6 +23,8 @@ export interface StudentProfile {
   suffix?: string;
   birthdate: string;
   sex: string;
+  photoUrl?: string;        // NEW
+  signatureUrl?: string;     // NEW
 }
 
 export interface TeacherProfile {
@@ -32,6 +34,8 @@ export interface TeacherProfile {
   lastName: string;
   suffix?: string;
   department?: string;
+  photoUrl?: string;        // NEW
+  signatureUrl?: string;     // NEW
 }
 
 // Academic Types

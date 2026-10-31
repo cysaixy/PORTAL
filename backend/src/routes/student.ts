@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { requireAuth, requireRole } from '../middleware/auth';
 import { Role } from '@prisma/client';
+import { uploadFields } from '../middleware/upload';
+import * as studentController from '../controllers/studentController';
 
 const router = Router();
 
@@ -10,9 +12,17 @@ router.use(requireAuth, requireRole(Role.STUDENT, Role.ADMIN));
 /**
  * Get student dashboard
  */
-router.get('/dashboard', (req, res) => {
-  res.json({ message: 'Get student dashboard - TODO' });
-});
+router.get('/dashboard', studentController.getDashboard);
+
+/**
+ * Get student profile
+ */
+router.get('/profile', studentController.getProfile);
+
+/**
+ * Upload photo and signature
+ */
+router.post('/upload-id', uploadFields, studentController.uploadIdDocuments);
 
 /**
  * Get enrolled subjects

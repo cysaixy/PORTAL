@@ -558,7 +558,7 @@ async function main() {
     }),
     prisma.announcement.create({
       data: {
-        authorId: teachers[0].id,
+        authorId: teacherUsers[0].id,
         title: 'Quarter 1 Grading Deadline',
         body: 'All teachers must submit and lock Quarter 1 grades by September 30, 2024.',
         audience: AnnouncementAudience.TEACHERS,
@@ -566,7 +566,7 @@ async function main() {
     }),
     prisma.announcement.create({
       data: {
-        authorId: teachers[1].id,
+        authorId: teacherUsers[1].id,
         title: 'English Department Meeting',
         body: 'All English teachers are invited to the department meeting on Friday, 3 PM at the faculty room.',
         audience: AnnouncementAudience.TEACHERS,
@@ -582,7 +582,7 @@ async function main() {
 
   await prisma.auditLog.create({
     data: {
-      userId: teachers[0].id,
+      userId: teacherUsers[0].id,
       action: 'CREATE',
       entity: 'Grade',
       entityId: createdGrades[0].id,

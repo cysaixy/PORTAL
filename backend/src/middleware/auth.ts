@@ -23,6 +23,28 @@ declare global {
  */
 export async function requireAuth(req: Request, res: Response, next: NextFunction) {
   try {
+    // DEV MODE: Bypass Firebase for testing
+    if (process.env.NODE_ENV === 'development' && process.env.DEV_BYPASS_AUTH === 'true') {
+      const testEmail = req.headers['x-test-user'] as string || 'testadmin@gmail.com';
+      
+      const user = await prisma.user.findUnique({
+        where: { email: testEmail },
+        select: {
+          id: true,
+          email: true,
+          role: true,
+          firebaseUid: true,
+          isActive: true,
+        },
+      });
+
+      if (user?.isActive) {
+        req.user = user;
+        logger.info(`[DEV MODE] Authenticated as: ${user.email} (${user.role})`);
+        return next();
+      }
+    }
+
     // Extract token from Authorization header
     const authHeader = req.headers.authorization;
     if (!authHeader?.startsWith('Bearer ')) {
