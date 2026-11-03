@@ -3,53 +3,60 @@ import { requireAuth, requireRole } from '../middleware/auth';
 import { Role } from '@prisma/client';
 import { uploadFields } from '../middleware/upload';
 import * as studentController from '../controllers/studentController';
+import { getStudentGrades } from '../controllers/studentGradesController';
+import { getStudentSubjects, getStudentAdviser } from '../controllers/studentSubjectsController';
+import { getReportCard } from '../controllers/reportCardController';
+import {
+  listStudentAnnouncements,
+  markAnnouncementRead,
+} from '../controllers/announcementController';
+import { validateParams } from '../middleware/validate';
+import { idParamSchema } from '../lib/validation';
 
 const router = Router();
 
 // All student routes require STUDENT role
-router.use(requireAuth, requireRole(Role.STUDENT, Role.ADMIN));
+router.use(requireAuth, requireRole(Role.STUDENT));
 
-/**
- * Get student dashboard
- */
+// ============================================================================
+// Dashboard
+// ============================================================================
 router.get('/dashboard', studentController.getDashboard);
 
-/**
- * Get student profile
- */
+// ============================================================================
+// Profile
+// ============================================================================
 router.get('/profile', studentController.getProfile);
 
-/**
- * Upload photo and signature
- */
+// ============================================================================
+// Upload photo and signature
+// ============================================================================
 router.post('/upload-id', uploadFields, studentController.uploadIdDocuments);
 
-/**
- * Get enrolled subjects
- */
-router.get('/subjects', (req, res) => {
-  res.json({ message: 'Get student subjects - TODO' });
-});
+// ============================================================================
+// Grades
+// ============================================================================
+router.get('/grades', studentController.getGrades);
 
-/**
- * Get grades
- */
-router.get('/grades', (req, res) => {
-  res.json({ message: 'Get student grades - TODO' });
-});
+// ============================================================================
+// Subjects
+// ============================================================================
+router.get('/subjects', studentController.getSubjects);
 
-/**
- * Get announcements
- */
-router.get('/announcements', (req, res) => {
-  res.json({ message: 'Get announcements - TODO' });
-});
+// ============================================================================
+// Adviser
+// ============================================================================
+router.get('/adviser', getStudentAdviser);
 
-/**
- * Generate report card (Form 138)
- */
-router.get('/report-card', (req, res) => {
-  res.json({ message: 'Generate report card PDF - TODO' });
-});
+// ============================================================================
+// Announcements
+// ============================================================================
+router.get('/announcements', listStudentAnnouncements);
+router.post('/announcements/:id/read', validateParams(idParamSchema), markAnnouncementRead);
+
+// ============================================================================
+// Report card (Form 138)
+// ============================================================================
+router.get('/report-card', getReportCard);
 
 export default router;

@@ -9,6 +9,10 @@ dist/
 .env.local
 .env.*.local
 
+# Firebase Admin SDK credentials (NEVER commit!)
+serviceAccountKey.json
+*firebase-adminsdk*.json
+
 # Logs
 logs/
 *.log

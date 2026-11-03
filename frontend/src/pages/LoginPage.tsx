@@ -1,20 +1,33 @@
-import { useEffect, useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
+import clsx from 'clsx';
 
 const DEV_MODE = import.meta.env.VITE_DEV_MODE === 'true';
 
+const ROLE_COLORS = {
+  admin: 'bg-brand',
+  teacher: 'bg-gold',
+  student: 'bg-emerald-500',
+} as const;
+
 const TEST_ACCOUNTS = [
-  { email: 'testadmin@gmail.com', role: 'Admin', color: 'red' },
-  { email: 'testteacher@gmail.com', role: 'Teacher', color: 'blue' },
-  { email: 'teststudent@gmail.com', role: 'Student', color: 'green' },
+  { role: 'Admin', email: 'admin@loa.edu.ph', colorKey: 'admin' as const },
+  { role: 'Teacher', email: 'jdela.cruz@loa.edu.ph', colorKey: 'teacher' as const },
+  { role: 'Student', email: 'student001@loa.edu.ph', colorKey: 'student' as const },
 ];
 
-export default function LoginPage() {
-  const { user, signInWithGoogle, devModeLogin, loading } = useAuth();
+interface LoginPageProps {
+  accessDenied?: boolean;
+}
+
+export default function LoginPage({ accessDenied }: LoginPageProps) {
+  const { user, signInWithGoogle, devModeLogin } = useAuth();
   const navigate = useNavigate();
-  const [error, setError] = useState<string | null>(null);
   const [isSigningIn, setIsSigningIn] = useState(false);
+  const [error, setError] = useState<string | null>(
+    accessDenied ? 'Access denied. Please contact the administrator.' : null
+  );
 
   useEffect(() => {
     if (user) {
@@ -22,177 +35,182 @@ export default function LoginPage() {
     }
   }, [user, navigate]);
 
-  const handleDevModeLogin = async (email: string) => {
-    setError(null);
-    setIsSigningIn(true);
-    
-    try {
-      await devModeLogin(email);
-    } catch (err: any) {
-      setError(err.message || 'Failed to sign in. Please try again.');
-    } finally {
-      setIsSigningIn(false);
-    }
-  };
-
   const handleGoogleSignIn = async () => {
     setError(null);
     setIsSigningIn(true);
-    
     try {
       await signInWithGoogle();
     } catch (err: any) {
-      console.error('Sign in error:', err);
-      setError(err.message || 'Failed to sign in. Please try again.');
+      if (err.code === 'auth/popup-closed-by-user') {
+        setError('Sign-in cancelled. Please try again.');
+      } else if (err.message?.includes('not registered')) {
+        setError('Your email is not registered in the LOA Portal. Please contact the administrator.');
+      } else {
+        setError('Unable to sign in. Please try again or contact support.');
+      }
     } finally {
       setIsSigningIn(false);
     }
   };
 
-  if (loading) {
+  const handleDevSignIn = async (email: string) => {
+    setError(null);
+    setIsSigningIn(true);
+    try {
+      await devModeLogin(email);
+    } catch (err: any) {
+      setError(err.message || 'Sign-in failed. Please try again.');
+    } finally {
+      setIsSigningIn(false);
+    }
+  };
+
+  if (user === undefined) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-gray-50">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600"></div>
+      <div className="min-h-screen flex items-center justify-center bg-canvas">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-brand"></div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 px-4">
-      <div className="max-w-md w-full space-y-8">
-        {/* Card */}
-        <div className="bg-white rounded-2xl shadow-xl p-8">
-          {/* Header */}
-          <div className="text-center mb-8">
-            <div className="mb-4">
-              <div className="inline-block p-3 bg-primary-100 rounded-full">
-                <svg
-                  className="w-12 h-12 text-primary-600"
-                  fill="none"
-                  stroke="currentColor"
-                  viewBox="0 0 24 24"
-                >
-                  <path
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth={2}
-                    d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"
-                  />
-                </svg>
-              </div>
-            </div>
-            <h1 className="text-3xl font-bold text-gray-900">LOA Portal</h1>
-            <p className="mt-2 text-sm text-gray-600">Lyceum of Alcala</p>
-            <p className="mt-1 text-xs text-gray-500">Student Project - Unofficial</p>
+    <div className="min-h-screen flex flex-col lg:flex-row">
+      {/* Left Panel */}
+      <div className="lg:w-1/2 bg-brand-deep px-8 py-8 lg:px-14 lg:py-14 flex flex-col justify-between text-white">
+        <div>
+          <h1 className="text-[28px] font-extrabold">LOA Portal</h1>
+        </div>
+        
+        <div className="mt-12 lg:mt-0">
+          <h2 className="text-[40px] lg:text-[56px] font-extrabold leading-tight max-w-[520px]">
+            Grades, subjects and announcements in one place.
+          </h2>
+          <p className="mt-6 text-[16px] text-brand-mist max-w-[440px]">
+            For students, teachers and the registrar of Lyceum of Alcala.
+          </p>
+        </div>
+        
+        <div className="mt-12 lg:mt-0 hidden lg:block">
+          <div className="w-24 h-2 bg-gold rounded-full"></div>
+        </div>
+      </div>
+
+      {/* Right Panel */}
+      <div className="lg:w-1/2 bg-canvas flex items-center justify-center px-6 py-12 lg:py-0">
+        <div className="w-full max-w-[400px]">
+          <div className="flex items-center gap-3 mb-2">
+            <h2 className="text-[30px] font-extrabold text-ink">Sign in</h2>
             {DEV_MODE && (
-              <div className="mt-2 inline-block px-3 py-1 bg-yellow-100 text-yellow-800 text-xs rounded-full">
-                🔧 Development Mode
-              </div>
+              <span className="px-2 py-1 bg-gold-soft text-gold-ink text-[11px] font-semibold rounded">
+                Development mode
+              </span>
             )}
           </div>
+          
+          <p className="text-[14px] text-muted mb-8">
+            Use the Google account the school registered for you.
+          </p>
 
-          {/* Error Message */}
           {error && (
-            <div className="mb-4 p-4 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-800">{error}</p>
+            <div
+              role="alert"
+              className="mb-6 px-4 py-3 bg-[#FBE0E0] border border-[#E9A9A9] rounded-xl text-[14px] text-[#7A0C10]"
+            >
+              <span className="font-bold">Access denied.</span> {error}
             </div>
           )}
 
-          {/* Dev Mode Test Accounts */}
           {DEV_MODE && (
-            <div className="mb-6">
-              <p className="text-sm text-gray-700 mb-3 font-medium">Login as:</p>
-              <div className="space-y-2">
-                {TEST_ACCOUNTS.map((account) => (
-                  <button
-                    key={account.email}
-                    onClick={() => handleDevModeLogin(account.email)}
-                    disabled={isSigningIn}
-                    className="w-full flex items-center justify-between px-4 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    <div className="flex items-center gap-3">
-                      <div className={`w-2 h-2 rounded-full bg-${account.color}-500`}></div>
-                      <div className="text-left">
-                        <div className="text-sm font-medium text-gray-900">{account.role}</div>
-                        <div className="text-xs text-gray-500">{account.email}</div>
+            <>
+              <div className="mb-6">
+                <p className="text-[13px] text-muted mb-3">Development mode: sign in as</p>
+                <div className="space-y-2">
+                  {TEST_ACCOUNTS.map((account) => (
+                    <button
+                      key={account.email}
+                      onClick={() => handleDevSignIn(account.email)}
+                      disabled={isSigningIn}
+                      className={clsx(
+                        'w-full flex items-center gap-3 px-5 py-3 bg-white border border-line rounded-full transition-colors min-h-[44px]',
+                        'hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2',
+                        'disabled:opacity-50 disabled:cursor-not-allowed'
+                      )}
+                    >
+                      <div className={clsx('w-2 h-2 rounded-full flex-shrink-0', ROLE_COLORS[account.colorKey])}></div>
+                      <div className="flex-1 text-left">
+                        <span className="text-[14px] font-bold text-ink">{account.role}</span>
+                        <span className="text-[14px] text-muted ml-2">{account.email}</span>
                       </div>
-                    </div>
-                    <svg className="w-5 h-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                    </svg>
-                  </button>
-                ))}
+                    </button>
+                  ))}
+                </div>
               </div>
               
               <div className="relative my-6">
                 <div className="absolute inset-0 flex items-center">
-                  <div className="w-full border-t border-gray-300"></div>
+                  <div className="w-full border-t border-line"></div>
                 </div>
-                <div className="relative flex justify-center text-sm">
-                  <span className="px-2 bg-white text-gray-500">Or</span>
+                <div className="relative flex justify-center text-[12px]">
+                  <span className="px-3 bg-canvas text-muted">or</span>
                 </div>
               </div>
-            </div>
+            </>
           )}
 
-          {/* Google Sign In Button */}
           <button
             onClick={handleGoogleSignIn}
             disabled={isSigningIn}
-            className="w-full flex items-center justify-center gap-3 px-4 py-3 border border-gray-300 rounded-lg shadow-sm bg-white hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-primary-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            className={clsx(
+              'w-full flex items-center justify-center gap-3 px-6 h-[52px] bg-white border border-line rounded-full transition-colors',
+              'hover:bg-canvas focus:outline-none focus:ring-2 focus:ring-brand focus:ring-offset-2',
+              'disabled:opacity-50 disabled:cursor-not-allowed'
+            )}
           >
             {isSigningIn ? (
               <>
-                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-primary-600"></div>
-                <span className="text-sm font-medium text-gray-700">Signing in...</span>
+                <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-brand"></div>
+                <span className="text-[15px] font-semibold text-ink">Signing in...</span>
               </>
             ) : (
               <>
-                <svg className="w-5 h-5" viewBox="0 0 24 24">
+                <svg
+                  aria-hidden="true"
+                  width="18"
+                  height="18"
+                  viewBox="0 0 18 18"
+                  xmlns="http://www.w3.org/2000/svg"
+                  className="flex-shrink-0"
+                >
                   <path
+                    d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"
                     fill="#4285F4"
-                    d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"
                   />
                   <path
+                    d="M9.003 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9.003 18z"
                     fill="#34A853"
-                    d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"
                   />
                   <path
+                    d="M3.964 10.71c-.18-.54-.282-1.117-.282-1.71s.102-1.17.282-1.71V4.958H.957C.347 6.173 0 7.548 0 9.002c0 1.454.348 2.827.957 4.042l3.007-2.333z"
                     fill="#FBBC05"
-                    d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"
                   />
                   <path
+                    d="M9.003 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.464.891 11.428 0 9.002 0 5.48 0 2.438 2.017.957 4.958L3.964 7.29c.708-2.127 2.692-3.71 5.036-3.71z"
                     fill="#EA4335"
-                    d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"
                   />
                 </svg>
-                <span className="text-sm font-medium text-gray-700">
-                  {DEV_MODE ? 'Sign in with Google (Production)' : 'Sign in with Google'}
-                </span>
+                <span className="text-[15px] font-semibold text-ink">Sign in with Google</span>
               </>
             )}
           </button>
 
-          {/* Info */}
-          <div className="mt-6 text-center">
-            <p className="text-xs text-gray-500">
-              {DEV_MODE 
-                ? 'Development mode: Use test accounts above or sign in with Google'
-                : 'Only registered email addresses can access this portal.'
-              }
-            </p>
-            {!DEV_MODE && (
-              <p className="text-xs text-gray-500 mt-1">
-                Contact the administrator if you need access.
-              </p>
-            )}
-          </div>
-        </div>
+          <p className="mt-4 text-[13px] text-muted">
+            Only registered email addresses can access this portal. Contact the administrator if you need access.
+          </p>
 
-        {/* Footer */}
-        <p className="text-center text-xs text-gray-600">
-          This is an unofficial student project for educational purposes.
-        </p>
+          <p className="mt-12 text-[12px] text-muted text-center">
+            Unofficial student project · sample data
+          </p>
+        </div>
       </div>
     </div>
   );

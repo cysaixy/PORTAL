@@ -5,7 +5,7 @@ import {
   onAuthStateChanged,
   User as FirebaseUser,
 } from 'firebase/auth';
-import { auth, googleProvider } from '../config/firebase';
+import { auth, googleProvider, hasConfig } from '../config/firebase';
 import api from '../lib/api';
 import { User } from '../types';
 
@@ -47,7 +47,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
 
     // PRODUCTION: Use Firebase
-    const unsubscribe = onAuthStateChanged(auth, async (firebaseUser) => {
+    if (!hasConfig) {
+      setLoading(false);
+      return;
+    }
+
+    const unsubscribe = onAuthStateChanged(auth!, async (firebaseUser) => {
       setFirebaseUser(firebaseUser);
 
       if (firebaseUser) {
@@ -61,7 +66,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           
           // If user is not in allowlist, sign them out
           if (error.response?.status === 403) {
-            await firebaseSignOut(auth);
+            await firebaseSignOut(auth!);
             alert('Access denied. Your email is not registered in the LOA Portal.');
           }
           
@@ -78,9 +83,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signInWithGoogle = async () => {
+    if (!hasConfig) {
+      alert(
+        'Firebase is not configured. Please create a .env file with your Firebase project credentials (see SETUP.md).'
+      );
+      return;
+    }
+
     try {
       setLoading(true);
-      const result = await signInWithPopup(auth, googleProvider);
+      const result = await signInWithPopup(auth!, googleProvider!);
       
       // Verify with backend
       const idToken = await result.user.getIdToken();
@@ -90,7 +102,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       console.error('Sign in failed:', error);
       
       if (error.response?.status === 403) {
-        await firebaseSignOut(auth);
+        await firebaseSignOut(auth!);
         throw new Error('Access denied. Your email is not registered in the LOA Portal.');
       }
       
@@ -109,8 +121,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (DEV_MODE) {
         localStorage.removeItem('dev_user_email');
         delete api.defaults.headers.common['x-test-user'];
-      } else {
-        await firebaseSignOut(auth);
+      } else if (hasConfig) {
+        await firebaseSignOut(auth!);
       }
       setUser(null);
     }

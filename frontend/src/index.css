@@ -3,13 +3,13 @@
 @tailwind utilities;
 
 :root {
-  font-family: Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: "Plus Jakarta Sans", Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
   line-height: 1.5;
   font-weight: 400;
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
+  color-scheme: light;
+  color: #1B1F3B;
+  background-color: #F4F2EF;
 
   font-synthesis: none;
   text-rendering: optimizeLegibility;
@@ -19,12 +19,24 @@
 
 @layer base {
   body {
-    @apply bg-gray-50 text-gray-900;
+    @apply bg-cream text-navy;
+  }
+  a {
+    @apply text-navy underline underline-offset-4;
+  }
+  button,
+  input,
+  select,
+  textarea {
+    @apply font-sans text-navy;
+  }
+  :focus-visible {
+    @apply outline-none ring-2 ring-[#6B0A0F] ring-offset-2;
   }
 }
 
 @layer utilities {
   .container-custom {
-    @apply max-w-7xl mx-auto px-4 sm:px-6 lg:px-8;
+    @apply max-w-[1200px] mx-auto px-4 sm:px-6 lg:px-8;
   }
 }

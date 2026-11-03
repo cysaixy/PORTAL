@@ -1,82 +1,148 @@
-import { useAuth } from '../../contexts/AuthContext';
+import { DashboardLayout } from '../../components/DashboardLayout';
+import { StatusPill } from '../../components';
+import { TEACHER_NAV } from '../../constants/navigation';
+
+const TEACHER_CLASSES = [
+  { section: '7-Einstein', subject: 'Mathematics 7', encoded: 8, total: 8, locked: true },
+  { section: '8-Newton', subject: 'English 8', encoded: 6, total: 10, locked: false },
+  { section: '11-STEM-A', subject: 'General Mathematics', encoded: 0, total: 5, locked: false },
+  { section: '11-STEM-A', subject: 'Basic Calculus', encoded: 0, total: 5, locked: false },
+  { section: '12-ABM-A', subject: 'Business Mathematics', encoded: 5, total: 5, locked: true },
+];
 
 export default function TeacherDashboard() {
-  const { user, signOut } = useAuth();
+  const pendingGrades = TEACHER_CLASSES.filter((c) => !c.locked).reduce((a, b) => a + (b.total - b.encoded), 0);
+  const totalSections = TEACHER_CLASSES.length;
+  const totalStudents = TEACHER_CLASSES.reduce((a, b) => a + b.total, 0);
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow">
-        <div className="container-custom py-4 flex justify-between items-center">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Teacher Portal</h1>
-            <p className="text-sm text-gray-600">
-              Welcome, {user?.teacher?.firstName} {user?.teacher?.lastName}
-            </p>
-          </div>
-          <button
-            onClick={signOut}
-            className="px-4 py-2 text-sm text-gray-700 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
-          >
-            Sign Out
-          </button>
-        </div>
-      </header>
-
-      {/* Main Content */}
-      <main className="container-custom py-8">
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-          {/* Dashboard Card - Sections */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 bg-blue-100 rounded-lg">
-                <svg className="w-6 h-6 text-blue-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-                </svg>
-              </div>
-              <h2 className="text-lg font-semibold text-gray-900">My Sections</h2>
+    <DashboardLayout
+      title="Teacher dashboard"
+      subtitle="Your classes, grade encoding and announcements."
+      nav={TEACHER_NAV}
+      schoolYear="SY 2024–2025 · Quarter 2"
+    >
+      {/* Pending grades - maroon hero card */}
+      <div className="col-span-12 lg:col-span-6 mb-6">
+        <div className="bg-[#6B0A0F] text-white rounded-[16px] p-6">
+          <div className="flex items-end justify-between gap-3 mb-4">
+            <div>
+              <p className="text-[11px] font-semibold text-[#FFD21F]/90 uppercase tracking-wider">Pending grades · Quarter 2</p>
+              <p className="text-[32px] font-800 text-white">{pendingGrades}</p>
+              <p className="text-[12px] text-[#F0BDBD]/80">To be encoded this quarter</p>
             </div>
-            <p className="text-3xl font-bold text-gray-900">5</p>
-            <p className="text-sm text-gray-600 mt-1">Assigned classes</p>
-          </div>
-
-          {/* Dashboard Card - Students */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 bg-green-100 rounded-lg">
-                <svg className="w-6 h-6 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
-                </svg>
-              </div>
-              <h2 className="text-lg font-semibold text-gray-900">Total Students</h2>
+            <div className="text-right">
+              <p className="text-[11px] text-[#FFD21F]/80">Quarter 2</p>
+              <p className="text-[24px] font-800 text-white">{pendingGrades}</p>
             </div>
-            <p className="text-3xl font-bold text-gray-900">180</p>
-            <p className="text-sm text-gray-600 mt-1">Across all sections</p>
           </div>
-
-          {/* Dashboard Card - Pending Grades */}
-          <div className="bg-white rounded-lg shadow p-6">
-            <div className="flex items-center gap-3 mb-4">
-              <div className="p-2 bg-yellow-100 rounded-lg">
-                <svg className="w-6 h-6 text-yellow-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" />
-                </svg>
-              </div>
-              <h2 className="text-lg font-semibold text-gray-900">Pending Grades</h2>
-            </div>
-            <p className="text-3xl font-bold text-gray-900">45</p>
-            <p className="text-sm text-gray-600 mt-1">To be encoded</p>
+          <p className="text-[12px] text-[#F0BDBD]/80 mb-3">Per class — grades left to encode</p>
+          <div className="space-y-2">
+            {TEACHER_CLASSES.filter((c) => !c.locked).map((c) => {
+              const left = c.total - c.encoded;
+              return (
+                <div key={c.subject} className="flex items-center justify-between bg-white/10 p-3 rounded-[8px]">
+                  <div className="flex items-center gap-3">
+                    <span className="text-[13px] font-medium text-white">{c.section}</span>
+                    <span className="text-[11px] text-[#FFD21F]/80">{c.subject}</span>
+                  </div>
+                  <span className="text-[13px] font-semibold text-white">{left} left</span>
+                </div>
+              );
+            })}
           </div>
         </div>
+      </div>
 
-        {/* Coming Soon */}
-        <div className="mt-8 bg-white rounded-lg shadow p-8 text-center">
-          <h3 className="text-lg font-semibold text-gray-900 mb-2">Coming Soon</h3>
-          <p className="text-gray-600">
-            Full teacher dashboard with grade encoding, section management, and announcement features will be available soon.
-          </p>
+      {/* My sections + Total students */}
+      <div className="col-span-12 lg:col-span-3">
+        <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6 mb-4">
+          <p className="text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider mb-1">My sections</p>
+          <p className="text-[32px] font-800 text-[#1B1F3B]">{totalSections}</p>
+          <p className="text-[11px] text-[#6B6B6B]">Assigned classes</p>
         </div>
-      </main>
-    </div>
+        <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6">
+          <p className="text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider mb-1">Total students</p>
+          <p className="text-[32px] font-800 text-[#1B1F3B]">{totalStudents}</p>
+          <p className="text-[11px] text-[#6B6B6B]">Across your sections</p>
+        </div>
+      </div>
+
+      {/* My classes table - 8 cols + side stack */}
+      <div className="col-span-12 grid grid-cols-12 gap-4">
+        <div className="col-span-12 lg:col-span-8">
+          <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <p className="text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">My classes</p>
+                <p className="text-[15px] font-800 text-[#1B1F3B]">Grade encoding status</p>
+              </div>
+            </div>
+            <div className="border border-[#E8E2DE] rounded-[8px] overflow-hidden">
+              <table className="w-full text-left text-[13px]">
+                <thead>
+                  <tr className="bg-[#F4F2EF]">
+                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Section</th>
+                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Subject</th>
+                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Encoded</th>
+                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Status</th>
+                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E8E2DE]">
+                  {TEACHER_CLASSES.map((c) => {
+                    const pct = Math.round((c.encoded / c.total) * 100);
+                    return (
+                      <tr key={c.subject} className="hover:bg-[#FFF1C2]/30 transition-colors">
+                        <td className="px-4 py-3 text-[#1B1F3B] font-medium">{c.section}</td>
+                        <td className="px-4 py-3 text-[#6B6B6B]">{c.subject}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-2">
+                            <span className="text-[#1B1F3B]">{c.encoded}</span>
+                            <span className="text-[#6B6B6B] text-[11px]">/{c.total}</span>
+                          </div>
+                          <div className="w-full h-[6px] rounded-full bg-[#E8E2DE] mt-1 overflow-hidden">
+                            <div className="h-full bg-[#6B0A0F]" style={{ width: `${pct}%` }} />
+                          </div>
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusPill status={c.locked ? 'Locked' : 'In progress'} />
+                        </td>
+                        <td className="px-4 py-3 text-right">
+                          <button className={`px-3 py-1.5 rounded-[8px] text-[11px] font-semibold ${c.locked ? 'text-[#6B6B6B] hover:bg-[#FFF1C2] border border-[#E8E2DE]' : 'bg-[#FFD21F] text-[#1B1F3B]'}`}>
+                            {c.locked ? 'View' : 'Encode'}
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-span-12 lg:col-span-4 flex flex-col gap-4">
+          {/* Advisory class card */}
+          <div className="bg-[#FFF1C2] border border-[#E6C200] rounded-[16px] p-6">
+            <p className="text-[11px] font-semibold text-[#8a6d00] uppercase tracking-wider mb-2">Advisory class</p>
+            <p className="text-[15px] font-800 text-[#8a6d00] mb-1">7-Einstein</p>
+            <p className="text-[11px] text-[#8a6d00] mb-3">Mathematics 7 · 8 students</p>
+            <button className="w-full py-2.5 rounded-full bg-[#FFD21F] text-[#1B1F3B] text-[12px] font-semibold hover:bg-[#E6C200]">
+              Open advisory class
+            </button>
+          </div>
+
+          {/* Announcements card */}
+          <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6">
+            <p className="text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider mb-2">Post announcement</p>
+            <p className="text-[13px] text-[#6B6B6B] mb-4">Share a message with your classes.</p>
+            <button className="w-full py-2.5 rounded-full border-2 border-[#E8E2DE] text-[#1B1F3B] text-[12px] font-semibold disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+              Compose announcement
+            </button>
+          </div>
+        </div>
+      </div>
+    </DashboardLayout>
   );
 }

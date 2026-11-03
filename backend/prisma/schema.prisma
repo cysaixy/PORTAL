@@ -11,7 +11,7 @@ datasource db {
 }
 
 // ============================================================================
-// Authentication & Users
+// Authentication & Users (allowlist - role comes from here, never from Google)
 // ============================================================================
 
 enum Role {
@@ -23,7 +23,7 @@ enum Role {
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
-  firebaseUid   String    @unique // Firebase Auth UID
+  firebaseUid   String?   @unique // Firebase Auth UID (nullable for dev mode)
   role          Role
   isActive      Boolean   @default(true)
   createdAt     DateTime  @default(now())
@@ -248,17 +248,43 @@ model Grade {
   score             Decimal   @db.Decimal(5, 2) // e.g., 88.50
   remarks           String?   // PASSED, FAILED, INC, etc.
   locked            Boolean   @default(false)
+  lockedAt          DateTime?
+  lockedById        String?
   encodedAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt
 
   // Relations
   studentSection    StudentSection  @relation(fields: [studentSectionId], references: [id], onDelete: Cascade)
   sectionSubject    SectionSubject  @relation(fields: [sectionSubjectId], references: [id], onDelete: Cascade)
+  lockedBy          User?           @relation(fields: [lockedById], references: [id])
 
   @@unique([studentSectionId, sectionSubjectId, quarter])
   @@index([studentSectionId])
   @@index([sectionSubjectId])
   @@index([locked])
+}
+
+// ============================================================================
+// Unlock Requests (teachers request unlock, admin approves/rejects)
+// ============================================================================
+
+model UnlockRequest {
+  id          String   @id @default(cuid())
+  gradeId     String
+  requestedBy String   // teacher email
+  reason      String   // why the teacher needs to unlock
+  status      String   @default("pending") // pending, approved, rejected
+  adminNote   String?  // admin's note on approval/rejection
+  createdAt   DateTime @default(now())
+  reviewedAt  DateTime?
+  reviewedById String? // admin who reviewed
+  
+  // Relations
+  grade       Grade      @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+  reviewedBy  User?      @relation(fields: [reviewedById], references: [id])
+
+  @@index([status])
+  @@index([gradeId])
 }
 
 // ============================================================================
@@ -286,16 +312,31 @@ model Announcement {
 
   // Relations
   author      User                  @relation(fields: [authorId], references: [id])
+  reads       AnnouncementRead[]
 
   @@index([audience])
   @@index([createdAt])
   @@index([isPinned])
 }
 
+model AnnouncementRead {
+  id            String   @id @default(cuid())
+  announcementId String
+  studentId     String
+  readAt        DateTime @default(now())
+
+  // Relations
+  announcement  Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  student       Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([announcementId, studentId])
+  @@index([studentId])
+}
+
 model AuditLog {
   id          String    @id @default(cuid())
   userId      String
-  action      String    // CREATE, UPDATE, DELETE, LOCK, UNLOCK
+  action      String    // CREATE, UPDATE, DELETE, LOCK, UNLOCK, REQUEST_UNLOCK
   entity      String    // Grade, Student, Section, etc.
   entityId    String
   before      Json?     // Previous state
@@ -309,4 +350,14 @@ model AuditLog {
   @@index([userId])
   @@index([entity])
   @@index([createdAt])
+}
+
+// ============================================================================
+// Settings (configurable values like passing score)
+// ============================================================================
+
+model Setting {
+  id    String @id @default(cuid())
+  key   String @unique
+  value String
 }
