@@ -1,420 +1,257 @@
 import { Request, Response } from 'express';
+import { Prisma, Role } from '@prisma/client';
 import prisma from '../config/database';
-import logger from '../config/logger';
+import { audit, getCurrentEnrollment, getCurrentSchoolYear, HttpError, insensitive, paginate, requireStudent, requireTeacher } from '../lib/http';
 import { announcementSchema, paginationSchema } from '../lib/validation';
 
+const authorSelect = {
+  select: {
+    email: true,
+    role: true,
+    teacher: { select: { firstName: true, lastName: true } },
+  },
+} as const;
+
+type WithAuthor = { author: { email: string; role: Role; teacher: { firstName: string; lastName: string } | null } };
+
+function authorName(a: WithAuthor) {
+  if (a.author.teacher) return `${a.author.teacher.firstName} ${a.author.teacher.lastName}`;
+  return a.author.role === 'ADMIN' ? 'Registrar’s Office' : a.author.email;
+}
+
+async function targetLabels(items: { audience: string; targetId: string | null }[]) {
+  const sectionIds = items.filter((i) => i.audience === 'SECTION' && i.targetId).map((i) => i.targetId!);
+  const levelIds = items.filter((i) => i.audience === 'GRADE_LEVEL' && i.targetId).map((i) => i.targetId!);
+  const [sections, levels] = await Promise.all([
+    prisma.section.findMany({ where: { id: { in: sectionIds } }, select: { id: true, name: true } }),
+    prisma.gradeLevel.findMany({ where: { id: { in: levelIds } }, select: { id: true, name: true } }),
+  ]);
+  const map = new Map<string, string>([...sections, ...levels].map((x) => [x.id, x.name]));
+  return (i: { audience: string; targetId: string | null }) =>
+    ({ ALL: 'Everyone', STUDENTS: 'All students', TEACHERS: 'All teachers' } as Record<string, string>)[i.audience] ??
+    (i.targetId ? map.get(i.targetId) ?? 'Unknown target' : 'Unknown target');
+}
+
+async function validateTarget(data: { audience: string; targetId?: string | null }) {
+  if (data.audience === 'SECTION') {
+    if (!data.targetId || !(await prisma.section.findUnique({ where: { id: data.targetId } }))) {
+      throw new HttpError(400, 'Choose a section for this announcement');
+    }
+  } else if (data.audience === 'GRADE_LEVEL') {
+    if (!data.targetId || !(await prisma.gradeLevel.findUnique({ where: { id: data.targetId } }))) {
+      throw new HttpError(400, 'Choose a grade level for this announcement');
+    }
+  }
+}
+
 // ============================================================================
-// Admin: Manage all announcements
+// Admin
 // ============================================================================
 
-/**
- * GET /api/admin/announcements
- * List all announcements with pagination
- */
+/** GET /api/admin/announcements */
 export async function listAdminAnnouncements(req: Request, res: Response) {
-  try {
-    const { page, limit, search } = paginationSchema.parse(req.query);
-    const skip = (page - 1) * limit;
+  const { page, limit, search } = paginationSchema.parse(req.query);
+  const where: Prisma.AnnouncementWhereInput = search
+    ? { OR: [{ title: insensitive(search) }, { body: insensitive(search) }] }
+    : {};
 
-    const where: any = {};
+  const [announcements, total] = await prisma.$transaction([
+    prisma.announcement.findMany({
+      where,
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: [{ isPinned: 'desc' }, { createdAt: 'desc' }],
+      include: { author: authorSelect, _count: { select: { reads: true } } },
+    }),
+    prisma.announcement.count({ where }),
+  ]);
+  const label = await targetLabels(announcements);
 
-    if (search) {
-      where.OR = [
-        { title: { contains: search, mode: 'insensitive' } },
-        { body: { contains: search, mode: 'insensitive' } },
-      ];
-    }
+  res.json({
+    announcements: announcements.map((a) => ({
+      ...a,
+      authorName: authorName(a),
+      targetLabel: label(a),
+      readCount: a._count.reads,
+      canEdit: true,
+    })),
+    pagination: paginate(page, limit, total),
+  });
+}
 
-    const [announcements, total] = await prisma.$transaction([
-      prisma.announcement.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: [{ isPinned: 'desc' }, { createdAt: 'desc' }],
-        include: {
-          author: {
-            select: { email: true, role: true },
-          },
-          _count: {
-            select: { reads: true },
-          },
-        },
-      }),
-      prisma.announcement.count({ where }),
-    ]);
+/** POST /api/{admin|teacher}/announcements */
+export async function createAnnouncement(req: Request, res: Response) {
+  const data = announcementSchema.parse(req.body);
+  await validateTarget(data);
 
-    res.json({
-      announcements,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
+  if (req.user!.role === Role.TEACHER) {
+    await assertTeacherMayTarget(req, data);
+  }
+
+  const announcement = await prisma.announcement.create({
+    data: {
+      authorId: req.user!.id,
+      title: data.title,
+      body: data.body,
+      audience: data.audience,
+      targetId: data.audience === 'SECTION' || data.audience === 'GRADE_LEVEL' ? data.targetId ?? null : null,
+      // Only admins may pin
+      isPinned: req.user!.role === Role.ADMIN ? data.isPinned : false,
+    },
+  });
+  await audit(req, 'CREATE', 'Announcement', announcement.id, undefined, { title: data.title, audience: data.audience });
+  res.status(201).json({ announcement });
+}
+
+async function assertTeacherMayTarget(req: Request, data: { audience: string; targetId?: string | null }) {
+  if (data.audience === 'ALL' || data.audience === 'TEACHERS') {
+    throw new HttpError(403, 'Teachers can post to their own sections, grade levels or all students');
+  }
+  if (data.audience === 'SECTION' || data.audience === 'GRADE_LEVEL') {
+    const teacher = await requireTeacher(req);
+    const sy = await getCurrentSchoolYear();
+    const allowed = await prisma.section.findFirst({
+      where: {
+        ...(sy && { schoolYearId: sy.id }),
+        ...(data.audience === 'SECTION' ? { id: data.targetId! } : { gradeLevelId: data.targetId! }),
+        OR: [{ adviserId: teacher.id }, { subjects: { some: { teacherId: teacher.id } } }],
       },
     });
-  } catch (error) {
-    logger.error('List admin announcements error:', error);
-    res.status(500).json({ error: 'Failed to fetch announcements' });
+    if (!allowed) throw new HttpError(403, 'You can only post to sections or grade levels you teach');
   }
 }
 
-/**
- * POST /api/admin/announcements
- * Create an announcement (admin)
- */
-export async function createAdminAnnouncement(req: Request, res: Response) {
-  try {
-    const data = announcementSchema.parse(req.body);
-    const authorId = req.user!.id;
-
-    // Validate targetId for SECTION/GRADE_LEVEL audiences
-    if ((data.audience === 'SECTION' || data.audience === 'GRADE_LEVEL') && !data.targetId) {
-      return res.status(400).json({
-        error: 'Target ID is required for section or grade level audience',
-      });
-    }
-
-    const announcement = await prisma.announcement.create({
-      data: {
-        authorId,
-        title: data.title,
-        body: data.body,
-        audience: data.audience,
-        targetId: data.targetId || null,
-        isPinned: data.isPinned,
-      },
-      include: {
-        author: {
-          select: { email: true, role: true },
-        },
-      },
-    });
-
-    logger.info(`Announcement created: ${announcement.title} by ${req.user!.email}`);
-
-    res.status(201).json({ announcement });
-  } catch (error: any) {
-    logger.error('Create admin announcement error:', error);
-    res.status(500).json({ error: 'Failed to create announcement' });
+async function ownAnnouncement(req: Request) {
+  const announcement = await prisma.announcement.findUnique({ where: { id: req.params.id } });
+  if (!announcement) throw new HttpError(404, 'Announcement not found');
+  if (req.user!.role !== Role.ADMIN && announcement.authorId !== req.user!.id) {
+    throw new HttpError(403, 'You can only change your own announcements');
   }
+  return announcement;
 }
 
-/**
- * PUT /api/admin/announcements/:id
- * Update an announcement (admin)
- */
-export async function updateAdminAnnouncement(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-    const data = announcementSchema.partial().parse(req.body);
+/** PUT /api/{admin|teacher}/announcements/:id */
+export async function updateAnnouncement(req: Request, res: Response) {
+  const existing = await ownAnnouncement(req);
+  const data = announcementSchema.partial().parse(req.body);
+  const merged = { audience: data.audience ?? existing.audience, targetId: data.targetId !== undefined ? data.targetId : existing.targetId };
+  await validateTarget(merged);
+  if (req.user!.role === Role.TEACHER) await assertTeacherMayTarget(req, merged);
 
-    const announcement = await prisma.announcement.update({
-      where: { id },
-      data: {
-        ...(data.title && { title: data.title }),
-        ...(data.body && { body: data.body }),
-        ...(data.audience && { audience: data.audience }),
-        ...(data.targetId !== undefined && { targetId: data.targetId }),
-        ...(data.isPinned !== undefined && { isPinned: data.isPinned }),
-      },
-      include: {
-        author: {
-          select: { email: true, role: true },
-        },
-      },
-    });
-
-    res.json({ announcement });
-  } catch (error: any) {
-    if (error.code === 'P2025') {
-      return res.status(404).json({ error: 'Announcement not found' });
-    }
-    logger.error('Update announcement error:', error);
-    res.status(500).json({ error: 'Failed to update announcement' });
-  }
+  const announcement = await prisma.announcement.update({
+    where: { id: existing.id },
+    data: {
+      ...(data.title && { title: data.title }),
+      ...(data.body && { body: data.body }),
+      audience: merged.audience,
+      targetId: merged.audience === 'SECTION' || merged.audience === 'GRADE_LEVEL' ? merged.targetId : null,
+      ...(req.user!.role === Role.ADMIN && data.isPinned !== undefined && { isPinned: data.isPinned }),
+    },
+  });
+  await audit(req, 'UPDATE', 'Announcement', existing.id, { title: existing.title }, { title: announcement.title });
+  res.json({ announcement });
 }
 
-/**
- * DELETE /api/admin/announcements/:id
- * Delete an announcement (admin)
- */
-export async function deleteAdminAnnouncement(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-
-    await prisma.announcement.delete({ where: { id } });
-
-    res.json({ message: 'Announcement deleted' });
-  } catch (error: any) {
-    if (error.code === 'P2025') {
-      return res.status(404).json({ error: 'Announcement not found' });
-    }
-    logger.error('Delete announcement error:', error);
-    res.status(500).json({ error: 'Failed to delete announcement' });
-  }
+/** DELETE /api/{admin|teacher}/announcements/:id */
+export async function deleteAnnouncement(req: Request, res: Response) {
+  const existing = await ownAnnouncement(req);
+  await prisma.announcement.delete({ where: { id: existing.id } });
+  await audit(req, 'DELETE', 'Announcement', existing.id, { title: existing.title });
+  res.json({ message: 'Announcement deleted' });
 }
 
 // ============================================================================
-// Teacher: Manage own announcements
+// Teacher
 // ============================================================================
 
-/**
- * GET /api/teacher/announcements
- * List teacher's announcements
- */
+/** GET /api/teacher/announcements — my posts + school-wide posts for teachers */
 export async function listTeacherAnnouncements(req: Request, res: Response) {
-  try {
-    const teacherId = req.user!.id;
-
-    const announcements = await prisma.announcement.findMany({
-      where: { authorId: teacherId },
-      orderBy: [{ isPinned: 'desc' }, { createdAt: 'desc' }],
-      include: {
-        _count: {
-          select: { reads: true },
-        },
-      },
-    });
-
-    res.json({ announcements });
-  } catch (error) {
-    logger.error('List teacher announcements error:', error);
-    res.status(500).json({ error: 'Failed to fetch announcements' });
-  }
-}
-
-/**
- * POST /api/teacher/announcements
- * Create an announcement (teacher)
- */
-export async function createTeacherAnnouncement(req: Request, res: Response) {
-  try {
-    const data = announcementSchema.parse(req.body);
-    const authorId = req.user!.id;
-
-    if ((data.audience === 'SECTION' || data.audience === 'GRADE_LEVEL') && !data.targetId) {
-      return res.status(400).json({
-        error: 'Target ID is required for section or grade level audience',
-      });
-    }
-
-    const announcement = await prisma.announcement.create({
-      data: {
-        authorId,
-        title: data.title,
-        body: data.body,
-        audience: data.audience,
-        targetId: data.targetId || null,
-        isPinned: data.isPinned,
-      },
-      include: {
-        author: {
-          select: { email: true, role: true },
-        },
-      },
-    });
-
-    res.status(201).json({ announcement });
-  } catch (error: any) {
-    logger.error('Create teacher announcement error:', error);
-    res.status(500).json({ error: 'Failed to create announcement' });
-  }
-}
-
-/**
- * PUT /api/teacher/announcements/:id
- * Update a teacher's own announcement
- */
-export async function updateTeacherAnnouncement(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-    const teacherId = req.user!.id;
-    const data = announcementSchema.partial().parse(req.body);
-
-    // Verify ownership
-    const existing = await prisma.announcement.findUnique({
-      where: { id },
-    });
-
-    if (!existing) {
-      return res.status(404).json({ error: 'Announcement not found' });
-    }
-
-    if (existing.authorId !== teacherId) {
-      return res.status(403).json({
-        error: 'You can only edit your own announcements',
-      });
-    }
-
-    const announcement = await prisma.announcement.update({
-      where: { id },
-      data: {
-        ...(data.title && { title: data.title }),
-        ...(data.body && { body: data.body }),
-        ...(data.audience && { audience: data.audience }),
-        ...(data.targetId !== undefined && { targetId: data.targetId }),
-        ...(data.isPinned !== undefined && { isPinned: data.isPinned }),
-      },
-    });
-
-    res.json({ announcement });
-  } catch (error: any) {
-    if (error.code === 'P2025') {
-      return res.status(404).json({ error: 'Announcement not found' });
-    }
-    logger.error('Update teacher announcement error:', error);
-    res.status(500).json({ error: 'Failed to update announcement' });
-  }
-}
-
-/**
- * DELETE /api/teacher/announcements/:id
- * Delete a teacher's own announcement
- */
-export async function deleteTeacherAnnouncement(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-    const teacherId = req.user!.id;
-
-    const existing = await prisma.announcement.findUnique({
-      where: { id },
-    });
-
-    if (!existing) {
-      return res.status(404).json({ error: 'Announcement not found' });
-    }
-
-    if (existing.authorId !== teacherId) {
-      return res.status(403).json({
-        error: 'You can only delete your own announcements',
-      });
-    }
-
-    await prisma.announcement.delete({ where: { id } });
-
-    res.json({ message: 'Announcement deleted' });
-  } catch (error: any) {
-    if (error.code === 'P2025') {
-      return res.status(404).json({ error: 'Announcement not found' });
-    }
-    logger.error('Delete teacher announcement error:', error);
-    res.status(500).json({ error: 'Failed to delete announcement' });
-  }
+  const announcements = await prisma.announcement.findMany({
+    where: { OR: [{ authorId: req.user!.id }, { audience: { in: ['ALL', 'TEACHERS'] } }] },
+    orderBy: [{ isPinned: 'desc' }, { createdAt: 'desc' }],
+    include: { author: authorSelect, _count: { select: { reads: true } } },
+    take: 100,
+  });
+  const label = await targetLabels(announcements);
+  res.json({
+    announcements: announcements.map((a) => ({
+      ...a,
+      authorName: authorName(a),
+      targetLabel: label(a),
+      readCount: a._count.reads,
+      canEdit: a.authorId === req.user!.id,
+    })),
+  });
 }
 
 // ============================================================================
-// Student: View announcements
+// Student
 // ============================================================================
 
-/**
- * GET /api/student/announcements
- * List announcements for a student (based on audience)
- */
+async function studentAudienceWhere(studentId: string): Promise<Prisma.AnnouncementWhereInput> {
+  const enrollment = await getCurrentEnrollment(studentId);
+  return {
+    OR: [
+      { audience: 'ALL' },
+      { audience: 'STUDENTS' },
+      ...(enrollment
+        ? [
+            { audience: 'SECTION' as const, targetId: enrollment.sectionId },
+            { audience: 'GRADE_LEVEL' as const, targetId: enrollment.section.gradeLevelId },
+          ]
+        : []),
+    ],
+  };
+}
+
+/** GET /api/student/announcements */
 export async function listStudentAnnouncements(req: Request, res: Response) {
-  try {
-    const studentId = req.user!.id;
+  const student = await requireStudent(req);
+  const announcements = await prisma.announcement.findMany({
+    where: await studentAudienceWhere(student.id),
+    orderBy: [{ isPinned: 'desc' }, { createdAt: 'desc' }],
+    include: {
+      author: authorSelect,
+      reads: { where: { studentId: student.id }, select: { readAt: true } },
+    },
+    take: 100,
+  });
+  const label = await targetLabels(announcements);
 
-    // Get the student's section
-    const student = await prisma.student.findUnique({
-      where: { userId: studentId },
-      include: {
-        enrollments: {
-          include: {
-            section: {
-              include: {
-                gradeLevel: true,
-              },
-            },
-          },
-        },
-      },
-    });
-
-    if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
-    }
-
-    const sectionId = student.enrollments[0]?.sectionId;
-    const gradeLevelId = student.enrollments[0]?.section.gradeLevelId;
-
-    // Get all announcements that apply to this student
-    const announcements = await prisma.announcement.findMany({
-      where: {
-        OR: [
-          { audience: 'ALL' },
-          { audience: 'STUDENTS' },
-          {
-            audience: 'SECTION',
-            targetId: sectionId || null,
-          },
-          {
-            audience: 'GRADE_LEVEL',
-            targetId: gradeLevelId || null,
-          },
-        ],
-      },
-      orderBy: [{ isPinned: 'desc' }, { createdAt: 'desc' }],
-      include: {
-        author: {
-          select: { email: true, role: true },
-        },
-        reads: {
-          where: { studentId: student.id },
-          select: { readAt: true },
-        },
-      },
-    });
-
-    // Mark as read counts
-    const unreadCount = announcements.filter(a => a.reads.length === 0).length;
-
-    res.json({
-      announcements: announcements.map(a => ({
-        ...a,
-        isRead: a.reads.length > 0,
-      })),
-      unreadCount,
-    });
-  } catch (error) {
-    logger.error('List student announcements error:', error);
-    res.status(500).json({ error: 'Failed to fetch announcements' });
-  }
+  const items = announcements.map(({ reads, ...a }) => ({
+    ...a,
+    authorName: authorName(a),
+    targetLabel: label(a),
+    isRead: reads.length > 0,
+  }));
+  res.json({ announcements: items, unreadCount: items.filter((a) => !a.isRead).length });
 }
 
-/**
- * POST /api/student/announcements/:id/read
- * Mark an announcement as read
- */
+/** POST /api/student/announcements/:id/read */
 export async function markAnnouncementRead(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-    const studentId = req.user!.id;
+  const student = await requireStudent(req);
+  const visible = await prisma.announcement.findFirst({
+    where: { id: req.params.id, ...(await studentAudienceWhere(student.id)) },
+  });
+  if (!visible) throw new HttpError(404, 'Announcement not found');
+  await prisma.announcementRead.upsert({
+    where: { announcementId_studentId: { announcementId: visible.id, studentId: student.id } },
+    update: {},
+    create: { announcementId: visible.id, studentId: student.id },
+  });
+  res.json({ message: 'Marked as read' });
+}
 
-    const student = await prisma.student.findUnique({
-      where: { userId: studentId },
-    });
-
-    if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
-    }
-
-    await prisma.announcementRead.upsert({
-      where: {
-        announcementId_studentId: {
-          announcementId: id,
-          studentId: student.id,
-        },
-      },
-      update: {},
-      create: {
-        announcementId: id,
-        studentId: student.id,
-      },
-    });
-
-    res.json({ message: 'Marked as read' });
-  } catch (error) {
-    logger.error('Mark announcement read error:', error);
-    res.status(500).json({ error: 'Failed to mark announcement as read' });
-  }
+/** POST /api/student/announcements/read-all */
+export async function markAllAnnouncementsRead(req: Request, res: Response) {
+  const student = await requireStudent(req);
+  const visible = await prisma.announcement.findMany({
+    where: { ...(await studentAudienceWhere(student.id)), reads: { none: { studentId: student.id } } },
+    select: { id: true },
+  });
+  await prisma.announcementRead.createMany({
+    data: visible.map((a) => ({ announcementId: a.id, studentId: student.id })),
+    skipDuplicates: true,
+  });
+  res.json({ marked: visible.length });
 }

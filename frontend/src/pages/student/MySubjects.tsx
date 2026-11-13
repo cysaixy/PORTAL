@@ -1,66 +1,51 @@
+import { useQuery } from '@tanstack/react-query';
 import { DashboardLayout } from '../../components/DashboardLayout';
-import { useStudentSubjects } from '../../hooks/useStudentSubjects';
-import { STUDENT_NAV } from '../../constants/navigation';
+import { Avatar, Badge, Card, EmptyState, ErrorState, PageLoader } from '../../components/ui';
+import api from '../../lib/api';
+import type { SectionSummary } from '../../hooks/useStudent';
+
+interface SubjectsData {
+  section: SectionSummary | null;
+  subjects: { id: string; code: string; title: string; category: string; semester: number | null; units: number | null; teacher: { name: string; department: string | null } }[];
+}
+
+const CAT: Record<string, 'info' | 'gold' | 'brand'> = { CORE: 'info', APPLIED: 'gold', SPECIALIZED: 'brand' };
 
 export default function MySubjects() {
-  const { data: subjects, isLoading } = useStudentSubjects();
-
-  if (isLoading) {
-    return (
-      <DashboardLayout
-        title="My subjects"
-        subtitle="Loading..."
-        nav={STUDENT_NAV}
-        schoolYear="SY 2024–2025 · Quarter 2"
-      >
-        <div className="col-span-12 flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#6B0A0F]"></div>
-        </div>
-      </DashboardLayout>
-    );
-  }
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['student', 'subjects'],
+    queryFn: () => api.get<SubjectsData>('/student/subjects').then((r) => r.data),
+  });
 
   return (
-    <DashboardLayout
-      title="My subjects"
-      subtitle="Your enrolled subjects for this school year."
-      nav={STUDENT_NAV}
-      schoolYear="SY 2024–2025 · Quarter 2"
-    >
-      <div className="col-span-12 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-        {subjects && subjects.length > 0 ? (
-          subjects.map((subject) => (
-            <div key={subject.id} className="bg-white border border-[#E8E2DE] rounded-[16px] p-6 hover:shadow-lg transition-shadow">
-              <div className="flex items-start justify-between mb-3">
-                <div className="flex-1">
-                  <h3 className="text-[15px] font-800 text-[#1B1F3B] mb-1">{subject.title}</h3>
-                  <p className="text-[11px] text-[#6B6B6B] uppercase tracking-wider">{subject.code}</p>
+    <DashboardLayout title="My subjects" subtitle={data?.section ? `${data.section.name} · ${data.section.gradeLevel}${data.section.strand ? ` ${data.section.strand}` : ''}` : undefined}>
+      {isLoading ? (
+        <PageLoader />
+      ) : error ? (
+        <Card><ErrorState error={error} onRetry={refetch} /></Card>
+      ) : !data?.subjects.length ? (
+        <Card><EmptyState icon="book" title="No subjects yet" description="Your subjects appear once you're enrolled and your section's classes are set up." /></Card>
+      ) : (
+        <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-4">
+          {data.subjects.map((s) => (
+            <Card key={s.id}>
+              <div className="flex items-start justify-between gap-2">
+                <span className="text-xs font-semibold text-brand-800">{s.code}</span>
+                <Badge tone={CAT[s.category] ?? 'neutral'}>{s.category.charAt(0) + s.category.slice(1).toLowerCase()}</Badge>
+              </div>
+              <h3 className="mt-1 font-bold text-ink">{s.title}</h3>
+              {s.semester && <p className="text-xs text-muted">Semester {s.semester}</p>}
+              <div className="mt-4 flex items-center gap-3 border-t border-line pt-4">
+                <Avatar name={s.teacher.name} size={32} />
+                <div className="min-w-0">
+                  <p className="text-sm font-medium truncate">{s.teacher.name}</p>
+                  <p className="text-xs text-muted truncate">{s.teacher.department ?? 'Teacher'}</p>
                 </div>
               </div>
-              <div className="space-y-2 mb-4">
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-[#6B6B6B]">Teacher:</span>
-                  <span className="text-[12px] text-[#1B1F3B] font-medium">
-                    {subject.teacher.firstName} {subject.teacher.lastName}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <span className="text-[11px] text-[#6B6B6B]">Section:</span>
-                  <span className="text-[12px] text-[#1B1F3B]">{subject.section}</span>
-                </div>
-              </div>
-              <div className="pt-3 border-t border-[#E8E2DE]">
-                <p className="text-[11px] text-[#6B6B6B]">Subject code</p>
-                <p className="text-[14px] font-semibold text-[#1B1F3B]">{subject.code}</p>
-              </div>
-            </div>
-          ))
-        ) : (
-          <div className="col-span-full bg-white border border-[#E8E2DE] rounded-[16px] p-8 text-center">
-            <p className="text-[13px] text-[#6B6B6B]">No subjects enrolled yet.</p>
-          </div>
-        )}
-      </div>
+            </Card>
+          ))}
+        </div>
+      )}
     </DashboardLayout>
   );
 }

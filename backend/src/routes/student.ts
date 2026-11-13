@@ -1,62 +1,36 @@
-import { Router } from 'express';
-import { requireAuth, requireRole } from '../middleware/auth';
+import { Router, Request, Response, NextFunction } from 'express';
 import { Role } from '@prisma/client';
+import { requireAuth, requireRole } from '../middleware/auth';
 import { uploadFields } from '../middleware/upload';
-import * as studentController from '../controllers/studentController';
-import { getStudentGrades } from '../controllers/studentGradesController';
-import { getStudentSubjects, getStudentAdviser } from '../controllers/studentSubjectsController';
-import { getReportCard } from '../controllers/reportCardController';
-import {
-  listStudentAnnouncements,
-  markAnnouncementRead,
-} from '../controllers/announcementController';
 import { validateParams } from '../middleware/validate';
+import { asyncHandler as h } from '../lib/http';
 import { idParamSchema } from '../lib/validation';
+import * as student from '../controllers/studentController';
+import * as announcements from '../controllers/announcementController';
 
 const router = Router();
 
-// All student routes require STUDENT role
 router.use(requireAuth, requireRole(Role.STUDENT));
 
-// ============================================================================
-// Dashboard
-// ============================================================================
-router.get('/dashboard', studentController.getDashboard);
+router.get('/dashboard', h(student.getDashboard));
+router.get('/profile', h(student.getProfile));
+router.get('/grades', h(student.getGrades));
+router.get('/subjects', h(student.getSubjects));
+router.get('/report-card', h(student.getReportCard));
 
-// ============================================================================
-// Profile
-// ============================================================================
-router.get('/profile', studentController.getProfile);
+// Multer errors (size/type) become 400s instead of 500s
+router.post(
+  '/upload-id',
+  (req: Request, res: Response, next: NextFunction) =>
+    uploadFields(req, res, (err: unknown) => {
+      if (err) return res.status(400).json({ error: err instanceof Error ? err.message : 'Upload failed' });
+      next();
+    }),
+  h(student.uploadIdDocuments)
+);
 
-// ============================================================================
-// Upload photo and signature
-// ============================================================================
-router.post('/upload-id', uploadFields, studentController.uploadIdDocuments);
-
-// ============================================================================
-// Grades
-// ============================================================================
-router.get('/grades', studentController.getGrades);
-
-// ============================================================================
-// Subjects
-// ============================================================================
-router.get('/subjects', studentController.getSubjects);
-
-// ============================================================================
-// Adviser
-// ============================================================================
-router.get('/adviser', getStudentAdviser);
-
-// ============================================================================
-// Announcements
-// ============================================================================
-router.get('/announcements', listStudentAnnouncements);
-router.post('/announcements/:id/read', validateParams(idParamSchema), markAnnouncementRead);
-
-// ============================================================================
-// Report card (Form 138)
-// ============================================================================
-router.get('/report-card', getReportCard);
+router.get('/announcements', h(announcements.listStudentAnnouncements));
+router.post('/announcements/read-all', h(announcements.markAllAnnouncementsRead));
+router.post('/announcements/:id/read', validateParams(idParamSchema), h(announcements.markAnnouncementRead));
 
 export default router;

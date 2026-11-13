@@ -3,14 +3,11 @@
 @tailwind utilities;
 
 :root {
-  font-family: "Plus Jakarta Sans", Inter, system-ui, Avenir, Helvetica, Arial, sans-serif;
+  font-family: 'Plus Jakarta Sans', Inter, system-ui, sans-serif;
   line-height: 1.5;
-  font-weight: 400;
-
   color-scheme: light;
-  color: #1B1F3B;
-  background-color: #F4F2EF;
-
+  color: #1b1f3b;
+  background-color: #f6f4f2;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
@@ -19,24 +16,53 @@
 
 @layer base {
   body {
-    @apply bg-cream text-navy;
-  }
-  a {
-    @apply text-navy underline underline-offset-4;
-  }
-  button,
-  input,
-  select,
-  textarea {
-    @apply font-sans text-navy;
+    @apply bg-canvas text-ink text-sm;
   }
   :focus-visible {
-    @apply outline-none ring-2 ring-[#6B0A0F] ring-offset-2;
+    @apply outline-none ring-2 ring-brand-500/60 ring-offset-1;
+  }
+  input[type='number']::-webkit-inner-spin-button,
+  input[type='number']::-webkit-outer-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type='number'] {
+    -moz-appearance: textfield;
   }
 }
 
-@layer utilities {
-  .container-custom {
-    @apply max-w-[1200px] mx-auto px-4 sm:px-6 lg:px-8;
+@layer components {
+  .input {
+    @apply block w-full h-10 rounded-lg border border-line bg-white px-3 text-sm text-ink placeholder:text-muted/70
+      transition-colors hover:border-line-strong focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/20
+      disabled:bg-canvas disabled:text-muted;
+  }
+  .input-error {
+    @apply border-danger-600 focus:border-danger-600 focus:ring-danger-600/20;
+  }
+  .th {
+    @apply px-4 py-2.5 text-left text-[11px] font-semibold uppercase tracking-wider text-muted whitespace-nowrap;
+  }
+  .td {
+    @apply px-4 py-3 align-middle;
+  }
+}
+
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  body {
+    background: white;
+  }
+  .print-sheet {
+    box-shadow: none !important;
+    border: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+  @page {
+    size: A4;
+    margin: 14mm;
   }
 }

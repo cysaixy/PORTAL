@@ -1,8 +1,30 @@
-// User and Authentication Types
 export enum Role {
   STUDENT = 'STUDENT',
   TEACHER = 'TEACHER',
   ADMIN = 'ADMIN',
+}
+
+export interface StudentProfile {
+  id: string;
+  lrn: string;
+  firstName: string;
+  middleName?: string | null;
+  lastName: string;
+  suffix?: string | null;
+  birthdate: string;
+  sex: 'M' | 'F';
+  photoUrl?: string | null;
+  signatureUrl?: string | null;
+}
+
+export interface TeacherProfile {
+  id: string;
+  firstName: string;
+  middleName?: string | null;
+  lastName: string;
+  suffix?: string | null;
+  department?: string | null;
+  photoUrl?: string | null;
 }
 
 export interface User {
@@ -10,41 +32,16 @@ export interface User {
   email: string;
   role: Role;
   isActive: boolean;
-  student?: StudentProfile;
-  teacher?: TeacherProfile;
+  student?: StudentProfile | null;
+  teacher?: TeacherProfile | null;
+  schoolYear?: { id: string; label: string } | null;
 }
 
-export interface StudentProfile {
-  id: string;
-  lrn: string;
-  firstName: string;
-  middleName?: string;
-  lastName: string;
-  suffix?: string;
-  birthdate: string;
-  sex: string;
-  photoUrl?: string;        // NEW
-  signatureUrl?: string;     // NEW
-}
-
-export interface TeacherProfile {
-  id: string;
-  firstName: string;
-  middleName?: string;
-  lastName: string;
-  suffix?: string;
-  department?: string;
-  photoUrl?: string;        // NEW
-  signatureUrl?: string;     // NEW
-}
-
-// Academic Types
-export interface SchoolYear {
-  id: string;
-  label: string;
-  startDate: string;
-  endDate: string;
-  isCurrent: boolean;
+export interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  totalPages: number;
 }
 
 export interface GradeLevel {
@@ -52,76 +49,81 @@ export interface GradeLevel {
   number: number;
   name: string;
   isSeniorHigh: boolean;
+  sectionCount?: number;
+  subjectCount?: number;
 }
 
 export interface Strand {
   id: string;
   code: string;
   name: string;
-  description?: string;
+  description?: string | null;
+  sectionCount?: number;
+  subjectCount?: number;
+}
+
+export interface SchoolYear {
+  id: string;
+  label: string;
+  startDate: string;
+  endDate: string;
+  isCurrent: boolean;
+  sectionCount?: number;
+  studentCount?: number;
+}
+
+export interface TeacherLite {
+  id: string;
+  firstName: string;
+  lastName: string;
+  department?: string | null;
 }
 
 export interface Section {
   id: string;
   name: string;
-  gradeLevelId: string;
-  strandId?: string;
-  adviserId?: string;
-  schoolYearId: string;
   capacity: number;
-  gradeLevel?: GradeLevel;
-  strand?: Strand;
-  adviser?: TeacherProfile;
+  gradeLevelId: string;
+  strandId: string | null;
+  adviserId: string | null;
+  schoolYearId: string;
+  gradeLevel: GradeLevel;
+  strand: Strand | null;
+  adviser: TeacherLite | null;
+  schoolYear: SchoolYear;
+  _count: { students: number; subjects: number };
 }
 
-export enum SubjectCategory {
-  CORE = 'CORE',
-  APPLIED = 'APPLIED',
-  SPECIALIZED = 'SPECIALIZED',
-}
+export type SubjectCategory = 'CORE' | 'APPLIED' | 'SPECIALIZED';
 
 export interface Subject {
   id: string;
   code: string;
   title: string;
   gradeLevelId: string;
-  strandId?: string;
-  semester?: number;
+  strandId: string | null;
+  semester: number | null;
   category: SubjectCategory;
-  units?: number;
+  units: number | null;
+  gradeLevel: GradeLevel;
+  strand: Strand | null;
+  _count?: { sections: number };
 }
 
-export interface Grade {
-  id: string;
-  quarter: number;
-  score: number;
-  remarks?: string;
-  locked: boolean;
-  encodedAt: string;
-  updatedAt: string;
-  subject?: Subject;
-  teacher?: TeacherProfile;
-}
+export type Audience = 'ALL' | 'STUDENTS' | 'TEACHERS' | 'SECTION' | 'GRADE_LEVEL';
 
 export interface Announcement {
   id: string;
   title: string;
   body: string;
-  audience: string;
+  audience: Audience;
+  targetId: string | null;
   isPinned: boolean;
   createdAt: string;
-  author?: User;
-}
-
-export interface AuditLog {
-  id: string;
-  userId: string;
-  action: string;
-  entity: string;
-  entityId: string;
-  before?: any;
-  after?: any;
-  ipAddress?: string;
-  createdAt: string;
-  user?: User;
+  updatedAt: string;
+  authorName: string;
+  targetLabel: string;
+  readCount?: number;
+  isRead?: boolean;
+  canEdit?: boolean;
 }

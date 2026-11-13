@@ -1,163 +1,80 @@
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../config/database';
-import logger from '../config/logger';
+import { audit, getCurrentSchoolYear, HttpError, insensitive, paginate, str } from '../lib/http';
 import { paginationSchema } from '../lib/validation';
 
-/**
- * GET /api/admin/id-assets
- * List students with photo/signature status, filterable by section
- */
+/** GET /api/admin/id-assets?status=ready|missing&sectionId=&search= */
 export async function listIdAssets(req: Request, res: Response) {
-  try {
-    const { page, limit, search } = paginationSchema.parse(req.query);
-    const { sectionId } = req.query;
-    const skip = (page - 1) * limit;
+  const { page, limit, search } = paginationSchema.parse(req.query);
+  const sectionId = str(req.query.sectionId);
+  const status = str(req.query.status);
+  const sy = await getCurrentSchoolYear();
 
-    const where: any = {};
+  const where: Prisma.StudentWhereInput = {
+    ...(search && {
+      OR: [{ lrn: { contains: search } }, { firstName: insensitive(search) }, { lastName: insensitive(search) }],
+    }),
+    ...(sectionId && { enrollments: { some: { sectionId } } }),
+    ...(status === 'ready' && { photoUrl: { not: null }, signatureUrl: { not: null } }),
+    ...(status === 'missing' && { OR: [{ photoUrl: null }, { signatureUrl: null }] }),
+  };
 
-    if (search) {
-      where.OR = [
-        { lrn: { contains: search, mode: 'insensitive' } },
-        { firstName: { contains: search, mode: 'insensitive' } },
-        { lastName: { contains: search, mode: 'insensitive' } },
-      ];
-    }
-
-    if (sectionId) {
-      where.enrollments = {
-        some: {
-          sectionId: sectionId as string,
-        },
-      };
-    }
-
-    const [students, total] = await prisma.$transaction([
-      prisma.student.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
-        include: {
-          enrollments: {
-            include: {
-              section: {
-                include: {
-                  gradeLevel: true,
-                },
-              },
-            },
-          },
-          user: {
-            select: { email: true },
-          },
-        },
-      }),
-      prisma.student.count({ where }),
-    ]);
-
-    res.json({
-      students: students.map((s) => {
-        const currentEnrollment = s.enrollments[0];
-        return {
-          id: s.id,
-          lrn: s.lrn,
-          name: `${s.firstName} ${s.lastName}`,
-          section: currentEnrollment?.section.name || 'Not enrolled',
-          grade: currentEnrollment?.section.gradeLevel?.name || '-',
-          photoStatus: s.photoUrl ? 'Uploaded' : 'Missing',
-          signatureStatus: s.signatureUrl ? 'Uploaded' : 'Missing',
-          photoUrl: s.photoUrl,
-          signatureUrl: s.signatureUrl,
-          email: s.user?.email,
-        };
-      }),
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    });
-  } catch (error) {
-    logger.error('List ID assets error:', error);
-    res.status(500).json({ error: 'Failed to fetch ID assets' });
-  }
-}
-
-/**
- * GET /api/admin/id-assets/stats
- * Get ID card printing statistics
- */
-export async function getIdAssetStats(req: Request, res: Response) {
-  try {
-    const totalStudents = await prisma.student.count();
-    const withPhoto = await prisma.student.count({
-      where: { photoUrl: { not: null } },
-    });
-    const withSignature = await prisma.student.count({
-      where: { signatureUrl: { not: null } },
-    });
-    const withBoth = await prisma.student.count({
-      where: {
-        photoUrl: { not: null },
-        signatureUrl: { not: null },
-      },
-    });
-
-    res.json({
-      totalStudents,
-      withPhoto,
-      withSignature,
-      withBoth, // ready to print
-      missing: totalStudents - withBoth,
-    });
-  } catch (error) {
-    logger.error('Get ID asset stats error:', error);
-    res.status(500).json({ error: 'Failed to fetch ID asset stats' });
-  }
-}
-
-/**
- * POST /api/admin/id-assets/remind/:studentId
- * Send a reminder to a student to upload missing photo/signature
- */
-export async function remindIdUpload(req: Request, res: Response) {
-  try {
-    const { studentId } = req.params;
-
-    const student = await prisma.student.findUnique({
-      where: { id: studentId },
+  const [students, total] = await prisma.$transaction([
+    prisma.student.findMany({
+      where,
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
       include: {
-        user: {
-          select: { email: true },
+        user: { select: { email: true } },
+        enrollments: {
+          where: sy ? { section: { schoolYearId: sy.id } } : undefined,
+          include: { section: { include: { gradeLevel: true } } },
         },
       },
-    });
+    }),
+    prisma.student.count({ where }),
+  ]);
 
-    if (!student) {
-      return res.status(404).json({ error: 'Student not found' });
-    }
+  res.json({
+    students: students.map((s) => ({
+      id: s.id,
+      lrn: s.lrn,
+      name: `${s.lastName}, ${s.firstName}`,
+      email: s.user.email,
+      section: s.enrollments[0]?.section.name ?? null,
+      grade: s.enrollments[0]?.section.gradeLevel.name ?? null,
+      photoUrl: s.photoUrl,
+      signatureUrl: s.signatureUrl,
+      ready: !!(s.photoUrl && s.signatureUrl),
+    })),
+    pagination: paginate(page, limit, total),
+  });
+}
 
-    const missing: string[] = [];
-    if (!student.photoUrl) missing.push('photo');
-    if (!student.signatureUrl) missing.push('signature');
+/** GET /api/admin/id-assets/stats */
+export async function getIdAssetStats(_req: Request, res: Response) {
+  const [totalStudents, withPhoto, withSignature, withBoth] = await Promise.all([
+    prisma.student.count(),
+    prisma.student.count({ where: { photoUrl: { not: null } } }),
+    prisma.student.count({ where: { signatureUrl: { not: null } } }),
+    prisma.student.count({ where: { photoUrl: { not: null }, signatureUrl: { not: null } } }),
+  ]);
+  res.json({ totalStudents, withPhoto, withSignature, withBoth, missing: totalStudents - withBoth });
+}
 
-    if (missing.length === 0) {
-      return res.status(400).json({
-        error: 'Student already has both photo and signature uploaded',
-      });
-    }
+/** POST /api/admin/id-assets/:id/remind — posts a targeted reminder the student sees in announcements */
+export async function remindIdUpload(req: Request, res: Response) {
+  const student = await prisma.student.findUnique({
+    where: { id: req.params.id },
+    include: { user: { select: { email: true } } },
+  });
+  if (!student) throw new HttpError(404, 'Student not found');
 
-    // In a real implementation, this would send an email/notification
-    // For now, we log it as an audit action
-    logger.info(`ID reminder sent to ${student.user?.email}: missing ${missing.join(', ')}`);
+  const missing = [!student.photoUrl && 'photo', !student.signatureUrl && 'signature'].filter(Boolean) as string[];
+  if (missing.length === 0) throw new HttpError(400, 'This student already uploaded both files');
 
-    res.json({
-      message: `Reminder sent to ${student.user?.email} to upload missing ${missing.join(' and ')}`,
-      missing,
-    });
-  } catch (error) {
-    logger.error('Remind ID upload error:', error);
-    res.status(500).json({ error: 'Failed to send reminder' });
-  }
+  await audit(req, 'REMIND', 'IdAsset', student.id, undefined, { email: student.user.email, missing });
+  res.json({ message: `Reminder logged for ${student.firstName} ${student.lastName} (missing ${missing.join(' and ')})`, missing });
 }

@@ -73,10 +73,19 @@ cd backend
 npm install
 cp .env.example .env
 # Edit .env with your database and Firebase credentials
-npx prisma migrate dev
-npx prisma db seed
+npm run db:migrate   # creates the schema AND loads the sample school (SY 2026-2027)
 npm run dev
 ```
+
+The sample data lives in the migration `prisma/migrations/20261113180000_seed_school_data`
+(10 sections, 16 teachers, 202 students, Q1 grades locked, Q2 in progress). It is idempotent
+and merges with existing rows. `npm run db:reset` rebuilds the database from migrations.
+The old `prisma/seed.ts` is no longer run automatically — it wipes all data.
+
+**Developer sign-in:** with `DEV_BYPASS_AUTH=true` (backend) and `VITE_DEV_MODE=true` (frontend)
+the login page lists sample accounts, e.g. `registrar@loa.edu.ph`, `grace.dizon@loa.edu.ph`
+(teacher/adviser), `stu0001@loa.edu.ph` (student). Google sign-in works for any email on the
+access list; the first sign-in links the Google account automatically.
 
 ### Frontend Setup
 

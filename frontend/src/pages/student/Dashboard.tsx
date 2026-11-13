@@ -1,186 +1,142 @@
+import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { DashboardLayout } from '../../components/DashboardLayout';
-import { useStudentDashboard } from '../../hooks/useStudentDashboard';
-import { useStudentGrades } from '../../hooks/useStudentGrades';
-import { STUDENT_NAV } from '../../constants/navigation';
+import { Alert, Badge, Card, CardHeader, EmptyState, ErrorState, PageLoader, StatTile } from '../../components/ui';
+import { Icon } from '../../components/Icon';
+import api from '../../lib/api';
+import { score, timeAgo } from '../../lib/format';
+import { descriptor, SectionSummary } from '../../hooks/useStudent';
+
+interface DashboardData {
+  student: { firstName: string; name: string; lrn: string; photoUrl: string | null; idReady: boolean };
+  section: SectionSummary | null;
+  report: {
+    subjectCount: number;
+    quarterAverages: Record<number, number | null>;
+    latestQuarter: number | null;
+    latestAverage: number | null;
+    generalAverage: number | null;
+    passingScore: number;
+    atRisk: string[];
+  } | null;
+  announcements: { id: string; title: string; body: string; createdAt: string; isPinned: boolean }[];
+  unreadAnnouncements: number;
+}
 
 export default function StudentDashboard() {
-  const { data: dashboardData, isLoading: dashboardLoading } = useStudentDashboard();
-  const { data: gradesData, isLoading: gradesLoading } = useStudentGrades();
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['student', 'dashboard'],
+    queryFn: () => api.get<DashboardData>('/student/dashboard').then((r) => r.data),
+  });
 
-  if (dashboardLoading || gradesLoading) {
-    return (
-      <DashboardLayout
-        title="Student dashboard"
-        subtitle="Loading..."
-        nav={STUDENT_NAV}
-        schoolYear="SY 2024–2025"
-      >
-        <div className="col-span-12 flex items-center justify-center py-12">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#6B0A0F]"></div>
-        </div>
-      </DashboardLayout>
-    );
-  }
-
-  const { statistics } = dashboardData || { statistics: { subjectCount: 0, quarterAverages: [], overallAverage: 0 } };
-  const grades = gradesData || [];
-
-  const quarters = ['Q1', 'Q2', 'Q3', 'Q4'];
-  const quarterValues = statistics.quarterAverages;
-  const averageGrade = statistics.overallAverage;
+  const r = data?.report;
+  const quarters = [1, 2, 3, 4];
+  const maxBar = 100;
+  const minBar = 60;
 
   return (
     <DashboardLayout
-      title="Student dashboard"
-      subtitle="Your grades, subjects and announcements for School Year 2024-2025."
-      nav={STUDENT_NAV}
-      schoolYear="SY 2024–2025 · Quarter 2"
+      title={data ? `Hi, ${data.student.firstName}!` : 'Dashboard'}
+      subtitle={data?.section ? `${data.section.name} · ${data.section.gradeLevel}${data.section.strand ? ` ${data.section.strand}` : ''} · Adviser: ${data.section.adviser ?? '—'}` : undefined}
     >
-      {/* Average grade - maroon hero card */}
-      <div className="col-span-12 lg:col-span-6 mb-6">
-        <div className="bg-[#6B0A0F] text-white rounded-[16px] p-6">
-          <div className="flex items-end justify-between gap-3 mb-2">
-            <div>
-              <p className="text-[11px] font-semibold text-[#FFD21F]/90 uppercase tracking-wider">Average grade</p>
-              <p className="text-[32px] font-800 text-white">{averageGrade || '—'}</p>
-              <p className="text-[12px] text-[#F0BDBD]/80">Current standing</p>
-            </div>
-            <div className="text-right">
-              <p className="text-[11px] text-[#FFD21F]/80">General average</p>
-              <p className="text-[24px] font-800 text-white">{averageGrade || '—'}</p>
-            </div>
-          </div>
-          <p className="text-[12px] text-[#F0BDBD]/80 mt-3 mb-3">{quarters.join('  ·  ')}</p>
-          <div className="flex gap-2">
-            {quarters.map((q, i) => {
-              const v = quarterValues[i];
-              const filled = v != null;
-              return (
-                <div key={q} className="flex-1 h-[10px] rounded-full relative overflow-hidden border border-white/20">
-                  {filled && (
-                    <div className="h-full bg-[#FFD21F]" style={{ width: `${Math.min(100, (v / 100) * 100)}%` }} />
-                  )}
-                  <span className={`absolute -top-[14px] left-1/2 -translate-x-1/2 text-[10px] ${filled ? 'text-white font-semibold' : 'text-white/30'}`}>
-                    {q}
-                  </span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      </div>
+      {isLoading ? (
+        <PageLoader rows={6} />
+      ) : error ? (
+        <Card><ErrorState error={error} onRetry={refetch} /></Card>
+      ) : data ? (
+        <div className="space-y-6">
+          {!data.section && <Alert tone="warn" title="You're not enrolled in a section yet">Please check with the registrar's office.</Alert>}
+          {!data.student.idReady && (
+            <Alert tone="info" title="Your school ID isn't ready" action={<Link to="/student/my-id" className="inline-flex h-8 items-center rounded-lg bg-gold-400 px-3 text-xs font-semibold text-ink hover:bg-gold-500">Upload now</Link>}>
+              Upload your photo and signature so your ID can be printed.
+            </Alert>
+          )}
 
-      {/* Subjects count + Announcements */}
-      <div className="col-span-12 lg:col-span-3">
-        <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6 mb-4">
-          <p className="text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider mb-1">Subjects</p>
-          <p className="text-[32px] font-800 text-[#1B1F3B]">{statistics.subjectCount}</p>
-          <p className="text-[11px] text-[#6B6B6B]">Enrolled this year</p>
-        </div>
-        <div className="bg-[#FFF1C2] border border-[#E6C200] rounded-[16px] p-6">
-          <div className="flex items-center justify-between mb-3">
-            <p className="text-[11px] font-semibold text-[#8a6d00] uppercase tracking-wider">Announcements</p>
-            <span className="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-[#FFF1C2] text-[#8a6d00] text-[10px] font-semibold">2 unread</span>
-          </div>
-          <div className="space-y-3">
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 rounded-full bg-[#E8E2DE] flex-shrink-0 flex items-center justify-center">
-                <span className="text-[9px] font-bold text-[#6B6B6B]">!</span>
-              </div>
-              <div className="flex-1">
-                <p className="text-[13px] font-medium text-[#1B1F3B]">Quarter 2 grading starts</p>
-                <p className="text-[11px] text-[#6B6B6B]">Teachers are now encoding Quarter 2 grades.</p>
-                <p className="text-[10px] text-[#6B6B6B] mt-1">October 14, 2024</p>
-              </div>
+          {r && (
+            <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+              <StatTile
+                tone="brand"
+                icon="chart"
+                label={r.latestQuarter ? `Quarter ${r.latestQuarter} average` : 'Latest average'}
+                value={score(r.latestAverage)}
+                hint={r.latestAverage ? descriptor(Math.round(r.latestAverage)) : 'No grades released yet'}
+              />
+              <StatTile icon="graduation" label="General average" value={score(r.generalAverage)} hint={r.generalAverage ? descriptor(Math.round(r.generalAverage)) : 'Available after Quarter 4'} />
+              <StatTile icon="book" label="Subjects" value={r.subjectCount} hint={data.section?.schoolYear ? `SY ${data.section.schoolYear}` : undefined} />
+              <StatTile tone="gold" icon="megaphone" label="Unread announcements" value={data.unreadAnnouncements} />
             </div>
-            <div className="flex items-start gap-3">
-              <div className="w-6 h-6 rounded-full bg-[#E8E2DE] flex-shrink-0 flex items-center justify-center">
-                <span className="text-[9px] font-bold text-[#6B6B6B]">!</span>
-              </div>
-              <div className="flex-1">
-                <p className="text-[13px] font-medium text-[#1B1F3B]">ID photo and signature upload</p>
-                <p className="text-[11px] text-[#6B6B6B]">Upload your ID photo and signature before the end of the month.</p>
-                <p className="text-[10px] text-[#6B6B6B] mt-1">October 20, 2024</p>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
+          )}
 
-      {/* My grades table + Report card */}
-      <div className="col-span-12 grid grid-cols-12 gap-4">
-        <div className="col-span-12 lg:col-span-8">
-          <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <p className="text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">My grades</p>
-                <p className="text-[15px] font-800 text-[#1B1F3B]">Quarterly scores by subject</p>
-              </div>
-            </div>
-            <div className="border border-[#E8E2DE] rounded-[8px] overflow-hidden">
-              <table className="w-full text-left text-[13px]">
-                <thead>
-                  <tr className="bg-[#F4F2EF]">
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Subject</th>
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider text-center">Q1</th>
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider text-center">Q2</th>
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider text-center">Q3</th>
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider text-center">Q4</th>
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider text-right">Average</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E8E2DE]">
-                  {grades.map((grade) => {
-                    const scores = [grade.quarters.q1, grade.quarters.q2, grade.quarters.q3, grade.quarters.q4];
-                    const validScores = scores.filter(s => s != null).map(s => s!.score);
-                    const average = validScores.length > 0
-                      ? (validScores.reduce((a, b) => a + b, 0) / validScores.length).toFixed(1)
-                      : '—';
-
+          <div className="grid lg:grid-cols-5 gap-6">
+            {r && (
+              <Card className="lg:col-span-3">
+                <CardHeader title="Quarterly averages" description="Average of all released subject grades per quarter" actions={<Link to="/student/my-grades" className="text-xs font-semibold text-brand-800 hover:underline">View grades →</Link>} />
+                <div className="flex items-end gap-4 h-48 pt-4">
+                  {quarters.map((q) => {
+                    const v = r.quarterAverages[q];
+                    const h = v ? ((v - minBar) / (maxBar - minBar)) * 100 : 0;
                     return (
-                      <tr key={grade.subject.id} className="hover:bg-[#FFF1C2]/30 transition-colors">
-                        <td className="px-4 py-3 text-[#1B1F3B] font-medium">{grade.subject.title}</td>
-                        <td className="px-4 py-3 text-center text-[#1B1F3B]">{grade.quarters.q1?.score ?? '—'}</td>
-                        <td className="px-4 py-3 text-center text-[#1B1F3B]">{grade.quarters.q2?.score ?? '—'}</td>
-                        <td className="px-4 py-3 text-center text-[#6B6B6B]">{grade.quarters.q3?.score ?? '—'}</td>
-                        <td className="px-4 py-3 text-center text-[#6B6B6B]">{grade.quarters.q4?.score ?? '—'}</td>
-                        <td className="px-4 py-3 text-right text-[#1B1F3B] font-semibold">{average}</td>
-                      </tr>
+                      <div key={q} className="flex-1 flex flex-col items-center justify-end h-full gap-2">
+                        <span className="text-sm font-bold tabular-nums">{score(v)}</span>
+                        <div className="w-full max-w-[72px] flex-1 flex items-end rounded-t-lg bg-ink/[0.04]">
+                          <div className={v ? (v < r.passingScore ? 'w-full rounded-t-lg bg-danger-600' : 'w-full rounded-t-lg bg-brand-800') : ''} style={{ height: `${Math.max(h, v ? 6 : 0)}%` }} />
+                        </div>
+                        <span className="text-xs font-semibold text-muted">Q{q}</span>
+                      </div>
                     );
                   })}
-                  {grades.length === 0 && (
-                    <tr>
-                      <td colSpan={6} className="px-4 py-8 text-center text-[#6B6B6B]">
-                        No grades available yet.
-                      </td>
-                    </tr>
-                  )}
-                  {grades.length > 0 && (
-                    <tr className="bg-[#F4F2EF] font-semibold">
-                      <td className="px-4 py-3 text-[#1B1F3B]">General average</td>
-                      <td className="px-4 py-3 text-center text-[#6B6B6B]">—</td>
-                      <td className="px-4 py-3 text-center text-[#6B6B6B]">—</td>
-                      <td className="px-4 py-3 text-center text-[#6B6B6B]">—</td>
-                      <td className="px-4 py-3 text-center text-[#6B6B6B]">—</td>
-                      <td className="px-4 py-3 text-right text-[#1B1F3B]">{averageGrade || '—'}</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+                </div>
+                {r.atRisk.length > 0 && (
+                  <div className="mt-4">
+                    <Alert tone="warn">
+                      Your running average is below {r.passingScore} in <b>{r.atRisk.join(', ')}</b>. Talk to your subject teacher or adviser.
+                    </Alert>
+                  </div>
+                )}
+              </Card>
+            )}
 
-        <div className="col-span-12 lg:col-span-4">
-          <div className="bg-[#FFF1C2] border border-[#E6C200] rounded-[16px] p-6">
-            <p className="text-[11px] font-semibold text-[#8a6d00] uppercase tracking-wider mb-3">Form 138 / Report card</p>
-            <p className="text-[12px] text-[#8a6d00] mb-4">Download your official report card for School Year 2024-2025.</p>
-            <button className="w-full py-2.5 rounded-full bg-[#FFD21F] text-[#1B1F3B] text-[12px] font-semibold hover:bg-[#E6C200]">
-              Print report card
-            </button>
+            <Card className={r ? 'lg:col-span-2' : 'lg:col-span-5'}>
+              <CardHeader title="Announcements" actions={<Link to="/student/announcements" className="text-xs font-semibold text-brand-800 hover:underline">All →</Link>} />
+              {data.announcements.length === 0 ? (
+                <EmptyState icon="megaphone" title="Nothing new" />
+              ) : (
+                <ul className="space-y-4">
+                  {data.announcements.map((a) => (
+                    <li key={a.id}>
+                      <div className="flex items-center gap-2">
+                        {a.isPinned && <Badge tone="gold" icon="pin">Pinned</Badge>}
+                        <p className="font-semibold text-sm">{a.title}</p>
+                      </div>
+                      <p className="text-xs text-ink-soft line-clamp-2 mt-0.5">{a.body}</p>
+                      <p className="text-[11px] text-muted mt-1">{timeAgo(a.createdAt)}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
+          </div>
+
+          <div className="grid sm:grid-cols-3 gap-4">
+            {[
+              { to: '/student/my-grades', icon: 'chart' as const, label: 'My grades', hint: 'Quarterly and final grades' },
+              { to: '/student/report-card', icon: 'printer' as const, label: 'Report card', hint: 'Print your Form 138' },
+              { to: '/student/my-id', icon: 'idcard' as const, label: 'My ID', hint: data.student.idReady ? 'Ready for printing' : 'Upload photo & signature' },
+            ].map((l) => (
+              <Link key={l.to} to={l.to} className="group flex items-center gap-4 rounded-2xl border border-line bg-white p-4 shadow-card hover:border-brand-200">
+                <span className="inline-flex h-10 w-10 items-center justify-center rounded-xl bg-brand-50 text-brand-800">
+                  <Icon name={l.icon} size={18} />
+                </span>
+                <span className="flex-1">
+                  <span className="block font-semibold group-hover:text-brand-800">{l.label}</span>
+                  <span className="block text-xs text-muted">{l.hint}</span>
+                </span>
+                <Icon name="chevronRight" size={16} className="text-muted" />
+              </Link>
+            ))}
           </div>
         </div>
-      </div>
+      ) : null}
     </DashboardLayout>
   );
 }

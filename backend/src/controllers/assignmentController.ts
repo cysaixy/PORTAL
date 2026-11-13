@@ -1,240 +1,141 @@
 import { Request, Response } from 'express';
+import { Prisma } from '@prisma/client';
 import prisma from '../config/database';
-import logger from '../config/logger';
-import { teachingAssignmentSchema, paginationSchema } from '../lib/validation';
+import { audit, getCurrentSchoolYear, HttpError, insensitive, paginate, str } from '../lib/http';
+import { paginationSchema, teachingAssignmentSchema } from '../lib/validation';
 
-/**
- * GET /api/admin/teaching-assignments
- * List teaching assignments with pagination and search
- */
+const HEAVY_LOAD = 6;
+
+const include = {
+  section: { include: { gradeLevel: true, strand: true } },
+  subject: true,
+  teacher: { select: { id: true, firstName: true, lastName: true, department: true } },
+  _count: { select: { grades: true } },
+} satisfies Prisma.SectionSubjectInclude;
+
+/** GET /api/admin/teaching-assignments?teacherId=&sectionId=&search= (current school year) */
 export async function listAssignments(req: Request, res: Response) {
-  try {
-    const { page, limit, search } = paginationSchema.parse(req.query);
-    const skip = (page - 1) * limit;
+  const { page, limit, search } = paginationSchema.parse(req.query);
+  const sy = await getCurrentSchoolYear();
+  const teacherId = str(req.query.teacherId);
+  const sectionId = str(req.query.sectionId);
 
-    const where = search
-      ? {
-          OR: [
-            { section: { name: { contains: search, mode: 'insensitive' } } },
-            { subject: { code: { contains: search, mode: 'insensitive' } } },
-            { subject: { title: { contains: search, mode: 'insensitive' } } },
-            { teacher: { firstName: { contains: search, mode: 'insensitive' } } },
-            { teacher: { lastName: { contains: search, mode: 'insensitive' } } },
-          ],
-        }
-      : {};
+  const where: Prisma.SectionSubjectWhereInput = {
+    ...(sy && { section: { schoolYearId: sy.id } }),
+    ...(teacherId && { teacherId }),
+    ...(sectionId && { sectionId }),
+    ...(search && {
+      OR: [
+        { section: { name: insensitive(search) } },
+        { subject: { code: insensitive(search) } },
+        { subject: { title: insensitive(search) } },
+        { teacher: { lastName: insensitive(search) } },
+        { teacher: { firstName: insensitive(search) } },
+      ],
+    }),
+  };
 
-    const [assignments, total] = await prisma.$transaction([
-      prisma.sectionSubject.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: [{ section: { name: 'asc' } }, { subject: { code: 'asc' } }],
-        include: {
-          section: {
-            include: {
-              gradeLevel: true,
-              strand: true,
-            },
-          },
-          subject: {
-            include: {
-              gradeLevel: true,
-            },
-          },
-          teacher: {
-            select: { id: true, firstName: true, lastName: true, department: true },
-          },
-          _count: {
-            select: { grades: true },
-          },
-        },
-      }),
-      prisma.sectionSubject.count({ where }),
-    ]);
+  const [assignments, total] = await prisma.$transaction([
+    prisma.sectionSubject.findMany({
+      where,
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: [{ section: { gradeLevel: { number: 'asc' } } }, { section: { name: 'asc' } }, { subject: { code: 'asc' } }],
+      include,
+    }),
+    prisma.sectionSubject.count({ where }),
+  ]);
 
-    res.json({
-      assignments,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
-      },
-    });
-  } catch (error) {
-    logger.error('List assignments error:', error);
-    res.status(500).json({ error: 'Failed to fetch teaching assignments' });
+  res.json({ assignments, pagination: paginate(page, limit, total) });
+}
+
+async function validatePair(sectionId: string, subjectId: string, teacherId: string) {
+  const [section, subject, teacher] = await Promise.all([
+    prisma.section.findUnique({ where: { id: sectionId } }),
+    prisma.subject.findUnique({ where: { id: subjectId } }),
+    prisma.teacher.findUnique({ where: { id: teacherId } }),
+  ]);
+  if (!section) throw new HttpError(404, 'Section not found');
+  if (!subject) throw new HttpError(404, 'Subject not found');
+  if (!teacher) throw new HttpError(404, 'Teacher not found');
+  if (section.gradeLevelId !== subject.gradeLevelId) {
+    throw new HttpError(400, 'The subject belongs to a different grade level than the section');
+  }
+  if (subject.strandId && section.strandId && subject.strandId !== section.strandId) {
+    throw new HttpError(400, 'The subject belongs to a different strand than the section');
   }
 }
 
-/**
- * POST /api/admin/teaching-assignments
- * Assign a teacher to a section-subject
- */
+/** POST /api/admin/teaching-assignments */
 export async function createAssignment(req: Request, res: Response) {
-  try {
-    const data = teachingAssignmentSchema.parse(req.body);
+  const data = teachingAssignmentSchema.parse(req.body);
+  await validatePair(data.sectionId, data.subjectId, data.teacherId);
 
-    // Check if assignment already exists
-    const existing = await prisma.sectionSubject.findFirst({
-      where: {
-        sectionId: data.sectionId,
-        subjectId: data.subjectId,
-      },
-    });
+  const existing = await prisma.sectionSubject.findUnique({
+    where: { sectionId_subjectId: { sectionId: data.sectionId, subjectId: data.subjectId } },
+  });
+  if (existing) throw new HttpError(409, 'This subject already has a teacher in that section — edit it instead');
 
-    if (existing) {
-      return res.status(409).json({
-        error: 'This subject is already assigned to this section',
-      });
-    }
-
-    // Verify section and subject belong to same grade level
-    const [section, subject] = await Promise.all([
-      prisma.section.findUnique({ where: { id: data.sectionId } }),
-      prisma.subject.findUnique({ where: { id: data.subjectId } }),
-    ]);
-
-    if (!section || !subject) {
-      return res.status(404).json({ error: 'Section or subject not found' });
-    }
-
-    if (section.gradeLevelId !== subject.gradeLevelId) {
-      return res.status(400).json({
-        error: 'Section and subject must be in the same grade level',
-      });
-    }
-
-    const assignment = await prisma.sectionSubject.create({
-      data: {
-        sectionId: data.sectionId,
-        subjectId: data.subjectId,
-        teacherId: data.teacherId,
-      },
-      include: {
-        section: true,
-        subject: true,
-        teacher: {
-          select: { id: true, firstName: true, lastName: true, department: true },
-        },
-      },
-    });
-
-    logger.info(`Assignment created: ${assignment.section.name} - ${assignment.subject.code}`);
-
-    res.status(201).json({ assignment });
-  } catch (error: any) {
-    if (error.code === 'P2002') {
-      return res.status(409).json({ error: 'Assignment already exists' });
-    }
-    logger.error('Create assignment error:', error);
-    res.status(500).json({ error: 'Failed to create teaching assignment' });
-  }
+  const assignment = await prisma.sectionSubject.create({ data, include });
+  await audit(req, 'CREATE', 'TeachingAssignment', assignment.id, undefined, {
+    section: assignment.section.name,
+    subject: assignment.subject.code,
+    teacher: `${assignment.teacher.firstName} ${assignment.teacher.lastName}`,
+  });
+  res.status(201).json({ assignment });
 }
 
-/**
- * PUT /api/admin/teaching-assignments/:id
- * Update a teaching assignment (change teacher)
- */
+/** PUT /api/admin/teaching-assignments/:id — usually to reassign the teacher */
 export async function updateAssignment(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-    const data = teachingAssignmentSchema.partial().parse(req.body);
+  const { id } = req.params;
+  const data = teachingAssignmentSchema.partial().parse(req.body);
+  const current = await prisma.sectionSubject.findUnique({ where: { id } });
+  if (!current) throw new HttpError(404, 'Assignment not found');
 
-    const assignment = await prisma.sectionSubject.update({
-      where: { id },
-      data: {
-        ...(data.teacherId && { teacherId: data.teacherId }),
-        ...(data.sectionId && { sectionId: data.sectionId }),
-        ...(data.subjectId && { subjectId: data.subjectId }),
-      },
-      include: {
-        section: true,
-        subject: true,
-        teacher: {
-          select: { id: true, firstName: true, lastName: true, department: true },
-        },
-      },
-    });
+  const next = { ...current, ...data };
+  await validatePair(next.sectionId, next.subjectId, next.teacherId);
 
-    res.json({ assignment });
-  } catch (error: any) {
-    if (error.code === 'P2025') {
-      return res.status(404).json({ error: 'Assignment not found' });
-    }
-    logger.error('Update assignment error:', error);
-    res.status(500).json({ error: 'Failed to update teaching assignment' });
-  }
+  const assignment = await prisma.sectionSubject.update({
+    where: { id },
+    data: { sectionId: next.sectionId, subjectId: next.subjectId, teacherId: next.teacherId },
+    include,
+  });
+  await audit(req, 'UPDATE', 'TeachingAssignment', id, { teacherId: current.teacherId }, { teacherId: next.teacherId });
+  res.json({ assignment });
 }
 
-/**
- * DELETE /api/admin/teaching-assignments/:id
- * Delete a teaching assignment
- */
+/** DELETE /api/admin/teaching-assignments/:id */
 export async function deleteAssignment(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-
-    const assignment = await prisma.sectionSubject.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: { grades: true },
-        },
-      },
-    });
-
-    if (!assignment) {
-      return res.status(404).json({ error: 'Assignment not found' });
-    }
-
-    if (assignment._count.grades > 0) {
-      return res.status(400).json({
-        error: 'Cannot delete assignment with existing grades',
-      });
-    }
-
-    await prisma.sectionSubject.delete({ where: { id } });
-
-    res.json({ message: 'Assignment deleted' });
-  } catch (error) {
-    logger.error('Delete assignment error:', error);
-    res.status(500).json({ error: 'Failed to delete teaching assignment' });
+  const { id } = req.params;
+  const assignment = await prisma.sectionSubject.findUnique({ where: { id }, include });
+  if (!assignment) throw new HttpError(404, 'Assignment not found');
+  if (assignment._count.grades > 0) {
+    throw new HttpError(400, 'Grades have been encoded for this class; reassign the teacher instead of deleting');
   }
+  await prisma.sectionSubject.delete({ where: { id } });
+  await audit(req, 'DELETE', 'TeachingAssignment', id, { section: assignment.section.name, subject: assignment.subject.code });
+  res.json({ message: 'Assignment removed' });
 }
 
-/**
- * GET /api/admin/teaching-assignments/teacher-load
- * Get teacher load statistics (for heavy load warnings)
- */
-export async function getTeacherLoad(req: Request, res: Response) {
-  try {
-    const teacherLoads = await prisma.teacher.findMany({
-      include: {
-        _count: {
-          select: { assignments: true },
-        },
-        user: {
-          select: { email: true, isActive: true },
-        },
-      },
-      orderBy: { lastName: 'asc' },
-    });
-
-    const loads = teacherLoads.map((t) => ({
+/** GET /api/admin/teaching-assignments/teacher-load */
+export async function getTeacherLoad(_req: Request, res: Response) {
+  const sy = await getCurrentSchoolYear();
+  const teachers = await prisma.teacher.findMany({
+    orderBy: [{ lastName: 'asc' }, { firstName: 'asc' }],
+    include: {
+      user: { select: { email: true, isActive: true } },
+      assignments: { where: sy ? { section: { schoolYearId: sy.id } } : {}, select: { id: true } },
+    },
+  });
+  res.json({
+    loads: teachers.map((t) => ({
       id: t.id,
       name: `${t.firstName} ${t.lastName}`,
-      email: t.user?.email,
+      email: t.user.email,
       department: t.department,
-      classCount: t._count.assignments,
-      isActive: t.user?.isActive,
-      heavyLoad: t._count.assignments > 6, // Warning threshold
-    }));
-
-    res.json({ loads });
-  } catch (error) {
-    logger.error('Get teacher load error:', error);
-    res.status(500).json({ error: 'Failed to fetch teacher loads' });
-  }
+      classCount: t.assignments.length,
+      isActive: t.user.isActive,
+      heavyLoad: t.assignments.length > HEAVY_LOAD,
+    })),
+  });
 }

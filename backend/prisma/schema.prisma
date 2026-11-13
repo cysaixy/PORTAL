@@ -21,19 +21,21 @@ enum Role {
 }
 
 model User {
-  id            String    @id @default(cuid())
-  email         String    @unique
-  firebaseUid   String?   @unique // Firebase Auth UID (nullable for dev mode)
-  role          Role
-  isActive      Boolean   @default(true)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id          String   @id @default(cuid())
+  email       String   @unique
+  firebaseUid String?  @unique // Firebase Auth UID (nullable for dev mode)
+  role        Role
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   // Relations
-  student       Student?
-  teacher       Teacher?
-  announcements Announcement[]
-  auditLogs     AuditLog[]
+  student         Student?
+  teacher         Teacher?
+  announcements   Announcement[]
+  auditLogs       AuditLog[]
+  lockedGrades    Grade[]         @relation("GradeLockedBy")
+  reviewedUnlocks UnlockRequest[] @relation("UnlockReviewer")
 
   @@index([email])
   @@index([firebaseUid])
@@ -44,57 +46,58 @@ model User {
 // ============================================================================
 
 model Student {
-  id              String    @id @default(cuid())
-  userId          String    @unique
-  lrn             String    @unique // Learner Reference Number
-  firstName       String
-  middleName      String?
-  lastName        String
-  suffix          String?
-  birthdate       DateTime
-  sex             String    // M or F
-  
+  id         String   @id @default(cuid())
+  userId     String   @unique
+  lrn        String   @unique // Learner Reference Number
+  firstName  String
+  middleName String?
+  lastName   String
+  suffix     String?
+  birthdate  DateTime
+  sex        String // M or F
+
   // ID and Signature
-  photoUrl        String?   // URL or path to student photo
-  signatureUrl    String?   // URL or path to student signature
-  
+  photoUrl     String? // URL or path to student photo
+  signatureUrl String? // URL or path to student signature
+
   // Guardian information
   guardianName    String
   guardianContact String
   guardianEmail   String?
   address         String
-  
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
-  enrollments     StudentSection[]
+  user              User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  enrollments       StudentSection[]
+  announcementReads AnnouncementRead[]
 
   @@index([lrn])
   @@index([lastName, firstName])
 }
 
 model Teacher {
-  id              String    @id @default(cuid())
-  userId          String    @unique
-  firstName       String
-  middleName      String?
-  lastName        String
-  suffix          String?
-  department      String?
-  
+  id         String  @id @default(cuid())
+  userId     String  @unique
+  firstName  String
+  middleName String?
+  lastName   String
+  suffix     String?
+  department String?
+
   // ID and Signature
-  photoUrl        String?   // URL or path to teacher photo
-  signatureUrl    String?   // URL or path to teacher signature
-  
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  photoUrl     String? // URL or path to teacher photo
+  signatureUrl String? // URL or path to teacher signature
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  user            User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user             User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   advisorySections Section[]        @relation("SectionAdviser")
-  assignments     SectionSubject[]
+  assignments      SectionSubject[]
 
   @@index([lastName, firstName])
 }
@@ -104,64 +107,64 @@ model Teacher {
 // ============================================================================
 
 model SchoolYear {
-  id          String    @id @default(cuid())
-  label       String    @unique // e.g., "2024-2025"
-  startDate   DateTime
-  endDate     DateTime
-  isCurrent   Boolean   @default(false)
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  id        String   @id @default(cuid())
+  label     String   @unique // e.g., "2024-2025"
+  startDate DateTime
+  endDate   DateTime
+  isCurrent Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   // Relations
-  sections    Section[]
+  sections Section[]
 
   @@index([isCurrent])
 }
 
 model GradeLevel {
-  id          String    @id @default(cuid())
-  number      Int       @unique // 7, 8, 9, 10, 11, 12
-  name        String    // e.g., "Grade 7", "Grade 11"
+  id           String   @id @default(cuid())
+  number       Int      @unique // 7, 8, 9, 10, 11, 12
+  name         String // e.g., "Grade 7", "Grade 11"
   isSeniorHigh Boolean  @default(false) // true for 11-12
-  createdAt   DateTime  @default(now())
+  createdAt    DateTime @default(now())
 
   // Relations
-  sections    Section[]
-  subjects    Subject[]
+  sections Section[]
+  subjects Subject[]
 
   @@index([number])
 }
 
 model Strand {
-  id          String    @id @default(cuid())
-  code        String    @unique // STEM, ABM, HUMSS, GAS, TVL, etc.
-  name        String    // Full name
+  id          String   @id @default(cuid())
+  code        String   @unique // STEM, ABM, HUMSS, GAS, TVL, etc.
+  name        String // Full name
   description String?
-  createdAt   DateTime  @default(now())
+  createdAt   DateTime @default(now())
 
   // Relations
-  sections    Section[]
-  subjects    Subject[]
+  sections Section[]
+  subjects Subject[]
 }
 
 model Section {
-  id            String    @id @default(cuid())
-  name          String    // e.g., "7-Einstein", "11-STEM-A"
-  gradeLevelId  String
-  strandId      String?   // null for junior high (grades 7-10)
-  adviserId     String?
-  schoolYearId  String
-  capacity      Int       @default(40)
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
+  id           String   @id @default(cuid())
+  name         String // e.g., "7-Einstein", "11-STEM-A"
+  gradeLevelId String
+  strandId     String? // null for junior high (grades 7-10)
+  adviserId    String?
+  schoolYearId String
+  capacity     Int      @default(40)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
 
   // Relations
-  gradeLevel    GradeLevel         @relation(fields: [gradeLevelId], references: [id])
-  strand        Strand?            @relation(fields: [strandId], references: [id])
-  adviser       Teacher?           @relation("SectionAdviser", fields: [adviserId], references: [id])
-  schoolYear    SchoolYear         @relation(fields: [schoolYearId], references: [id])
-  students      StudentSection[]
-  subjects      SectionSubject[]
+  gradeLevel GradeLevel       @relation(fields: [gradeLevelId], references: [id])
+  strand     Strand?          @relation(fields: [strandId], references: [id])
+  adviser    Teacher?         @relation("SectionAdviser", fields: [adviserId], references: [id])
+  schoolYear SchoolYear       @relation(fields: [schoolYearId], references: [id])
+  students   StudentSection[]
+  subjects   SectionSubject[]
 
   @@unique([name, schoolYearId])
   @@index([schoolYearId])
@@ -170,27 +173,27 @@ model Section {
 }
 
 enum SubjectCategory {
-  CORE          // Required for all
-  APPLIED       // Applied/contextualized subjects
-  SPECIALIZED   // Track/strand-specific
+  CORE // Required for all
+  APPLIED // Applied/contextualized subjects
+  SPECIALIZED // Track/strand-specific
 }
 
 model Subject {
-  id            String          @id @default(cuid())
-  code          String          @unique // e.g., "ENG7", "GEN-MATH"
-  title         String
-  gradeLevelId  String
-  strandId      String?         // null if available to all strands
-  semester      Int?            // 1 or 2, only for senior high
-  category      SubjectCategory @default(CORE)
-  units         Int?            // For college credit compatibility
-  createdAt     DateTime        @default(now())
-  updatedAt     DateTime        @updatedAt
+  id           String          @id @default(cuid())
+  code         String          @unique // e.g., "ENG7", "GEN-MATH"
+  title        String
+  gradeLevelId String
+  strandId     String? // null if available to all strands
+  semester     Int? // 1 or 2, only for senior high
+  category     SubjectCategory @default(CORE)
+  units        Int? // For college credit compatibility
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
 
   // Relations
-  gradeLevel    GradeLevel       @relation(fields: [gradeLevelId], references: [id])
-  strand        Strand?          @relation(fields: [strandId], references: [id])
-  sections      SectionSubject[]
+  gradeLevel GradeLevel       @relation(fields: [gradeLevelId], references: [id])
+  strand     Strand?          @relation(fields: [strandId], references: [id])
+  sections   SectionSubject[]
 
   @@index([code])
   @@index([gradeLevelId])
@@ -202,15 +205,15 @@ model Subject {
 // ============================================================================
 
 model StudentSection {
-  id          String    @id @default(cuid())
-  studentId   String
-  sectionId   String
-  enrolledAt  DateTime  @default(now())
+  id         String   @id @default(cuid())
+  studentId  String
+  sectionId  String
+  enrolledAt DateTime @default(now())
 
   // Relations
-  student     Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
-  section     Section   @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  grades      Grade[]
+  student Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  grades  Grade[]
 
   @@unique([studentId, sectionId])
   @@index([studentId])
@@ -218,17 +221,17 @@ model StudentSection {
 }
 
 model SectionSubject {
-  id          String    @id @default(cuid())
-  sectionId   String
-  subjectId   String
-  teacherId   String
-  createdAt   DateTime  @default(now())
+  id        String   @id @default(cuid())
+  sectionId String
+  subjectId String
+  teacherId String
+  createdAt DateTime @default(now())
 
   // Relations
-  section     Section   @relation(fields: [sectionId], references: [id], onDelete: Cascade)
-  subject     Subject   @relation(fields: [subjectId], references: [id], onDelete: Cascade)
-  teacher     Teacher   @relation(fields: [teacherId], references: [id])
-  grades      Grade[]
+  section Section @relation(fields: [sectionId], references: [id], onDelete: Cascade)
+  subject Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+  teacher Teacher @relation(fields: [teacherId], references: [id])
+  grades  Grade[]
 
   @@unique([sectionId, subjectId])
   @@index([sectionId])
@@ -241,22 +244,23 @@ model SectionSubject {
 // ============================================================================
 
 model Grade {
-  id                String    @id @default(cuid())
-  studentSectionId  String
-  sectionSubjectId  String
-  quarter           Int       // 1, 2, 3, 4
-  score             Decimal   @db.Decimal(5, 2) // e.g., 88.50
-  remarks           String?   // PASSED, FAILED, INC, etc.
-  locked            Boolean   @default(false)
-  lockedAt          DateTime?
-  lockedById        String?
-  encodedAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id               String    @id @default(cuid())
+  studentSectionId String
+  sectionSubjectId String
+  quarter          Int // 1, 2, 3, 4
+  score            Decimal   @db.Decimal(5, 2) // e.g., 88.50
+  remarks          String? // PASSED, FAILED, INC, etc.
+  locked           Boolean   @default(false)
+  lockedAt         DateTime?
+  lockedById       String?
+  encodedAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
   // Relations
-  studentSection    StudentSection  @relation(fields: [studentSectionId], references: [id], onDelete: Cascade)
-  sectionSubject    SectionSubject  @relation(fields: [sectionSubjectId], references: [id], onDelete: Cascade)
-  lockedBy          User?           @relation(fields: [lockedById], references: [id])
+  studentSection StudentSection  @relation(fields: [studentSectionId], references: [id], onDelete: Cascade)
+  sectionSubject SectionSubject  @relation(fields: [sectionSubjectId], references: [id], onDelete: Cascade)
+  lockedBy       User?           @relation("GradeLockedBy", fields: [lockedById], references: [id], onDelete: SetNull)
+  unlockRequests UnlockRequest[]
 
   @@unique([studentSectionId, sectionSubjectId, quarter])
   @@index([studentSectionId])
@@ -269,19 +273,19 @@ model Grade {
 // ============================================================================
 
 model UnlockRequest {
-  id          String   @id @default(cuid())
-  gradeId     String
-  requestedBy String   // teacher email
-  reason      String   // why the teacher needs to unlock
-  status      String   @default("pending") // pending, approved, rejected
-  adminNote   String?  // admin's note on approval/rejection
-  createdAt   DateTime @default(now())
-  reviewedAt  DateTime?
+  id           String    @id @default(cuid())
+  gradeId      String
+  requestedBy  String // teacher email
+  reason       String // why the teacher needs to unlock
+  status       String    @default("pending") // pending, approved, rejected
+  adminNote    String? // admin's note on approval/rejection
+  createdAt    DateTime  @default(now())
+  reviewedAt   DateTime?
   reviewedById String? // admin who reviewed
-  
+
   // Relations
-  grade       Grade      @relation(fields: [gradeId], references: [id], onDelete: Cascade)
-  reviewedBy  User?      @relation(fields: [reviewedById], references: [id])
+  grade      Grade @relation(fields: [gradeId], references: [id], onDelete: Cascade)
+  reviewedBy User? @relation("UnlockReviewer", fields: [reviewedById], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([gradeId])
@@ -300,19 +304,19 @@ enum AnnouncementAudience {
 }
 
 model Announcement {
-  id          String                @id @default(cuid())
-  authorId    String
-  title       String
-  body        String
-  audience    AnnouncementAudience  @default(ALL)
-  targetId    String?               // section or grade level ID if applicable
-  isPinned    Boolean               @default(false)
-  createdAt   DateTime              @default(now())
-  updatedAt   DateTime              @updatedAt
+  id        String               @id @default(cuid())
+  authorId  String
+  title     String
+  body      String
+  audience  AnnouncementAudience @default(ALL)
+  targetId  String? // section or grade level ID if applicable
+  isPinned  Boolean              @default(false)
+  createdAt DateTime             @default(now())
+  updatedAt DateTime             @updatedAt
 
   // Relations
-  author      User                  @relation(fields: [authorId], references: [id])
-  reads       AnnouncementRead[]
+  author User               @relation(fields: [authorId], references: [id])
+  reads  AnnouncementRead[]
 
   @@index([audience])
   @@index([createdAt])
@@ -320,32 +324,32 @@ model Announcement {
 }
 
 model AnnouncementRead {
-  id            String   @id @default(cuid())
+  id             String   @id @default(cuid())
   announcementId String
-  studentId     String
-  readAt        DateTime @default(now())
+  studentId      String
+  readAt         DateTime @default(now())
 
   // Relations
-  announcement  Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
-  student       Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  announcement Announcement @relation(fields: [announcementId], references: [id], onDelete: Cascade)
+  student      Student      @relation(fields: [studentId], references: [id], onDelete: Cascade)
 
   @@unique([announcementId, studentId])
   @@index([studentId])
 }
 
 model AuditLog {
-  id          String    @id @default(cuid())
-  userId      String
-  action      String    // CREATE, UPDATE, DELETE, LOCK, UNLOCK, REQUEST_UNLOCK
-  entity      String    // Grade, Student, Section, etc.
-  entityId    String
-  before      Json?     // Previous state
-  after       Json?     // New state
-  ipAddress   String?
-  createdAt   DateTime  @default(now())
+  id        String   @id @default(cuid())
+  userId    String
+  action    String // CREATE, UPDATE, DELETE, LOCK, UNLOCK, REQUEST_UNLOCK
+  entity    String // Grade, Student, Section, etc.
+  entityId  String
+  before    Json? // Previous state
+  after     Json? // New state
+  ipAddress String?
+  createdAt DateTime @default(now())
 
   // Relations
-  user        User      @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@index([userId])
   @@index([entity])

@@ -1,261 +1,143 @@
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
+import { useQuery } from '@tanstack/react-query';
 import { DashboardLayout } from '../../components/DashboardLayout';
-import { StatCard, StatusPill, ProgressBar } from '../../components';
-import LoadingSpinner from '../../components/LoadingSpinner';
-import { pillClasses } from '../../lib/design';
-import { ADMIN_NAV } from '../../constants/navigation';
-import { useAdminDashboard } from '../../hooks/useAdminDashboard';
+import { Badge, Card, CardHeader, EmptyState, ErrorState, PageLoader, Progress, StatTile } from '../../components/ui';
+import { Icon, IconName } from '../../components/Icon';
+import api from '../../lib/api';
+import { plural, timeAgo } from '../../lib/format';
+
+interface Stats {
+  schoolYear: { id: string; label: string } | null;
+  quarter: number;
+  students: { enrolled: number; juniorHigh: number; seniorHigh: number; unassigned: number; total: number };
+  teachers: { total: number; teaching: number; withoutLoad: number };
+  sections: { total: number; withoutAdviser: number; withoutSubjects: number };
+  subjects: { total: number };
+  idCards: { ready: number; total: number };
+  pendingUnlockRequests: number;
+  byGrade: { grade: string; name: string; isSeniorHigh: boolean; students: number; sections: number; encoded: number; locked: number; needed: number }[];
+  recentActivity: { id: string; actor: string; role: string; action: string; description: string; createdAt: string }[];
+}
+
+const ACTION_TONE: Record<string, 'success' | 'warn' | 'danger' | 'info' | 'neutral'> = {
+  LOCK: 'success',
+  UNLOCK: 'warn',
+  REQUEST_UNLOCK: 'warn',
+  REJECT_UNLOCK: 'danger',
+  DELETE: 'danger',
+  CREATE: 'info',
+  ENCODE: 'info',
+};
 
 export default function AdminDashboard() {
-  const navigate = useNavigate();
-  const { data: stats, isLoading, error } = useAdminDashboard();
+  const { data, isLoading, error, refetch } = useQuery({
+    queryKey: ['admin', 'dashboard'],
+    queryFn: () => api.get<Stats>('/admin/dashboard/stats').then((r) => r.data),
+  });
 
-  if (isLoading) {
-    return (
-      <DashboardLayout
-        title="Admin dashboard"
-        subtitle="School overview, grade submissions and items that need attention."
-        nav={ADMIN_NAV}
-        schoolYear="Loading..."
-      >
-        <div className="col-span-12 flex items-center justify-center py-20">
-          <LoadingSpinner />
-        </div>
-      </DashboardLayout>
-    );
+  const attention: { icon: IconName; text: string; to: string; cta: string }[] = [];
+  if (data?.schoolYear) {
+    if (data.pendingUnlockRequests) attention.push({ icon: 'unlock', text: `${plural(data.pendingUnlockRequests, 'unlock request')} waiting for review`, to: '/admin/grade-locks?tab=requests', cta: 'Review' });
+    if (data.students.unassigned) attention.push({ icon: 'graduation', text: `${plural(data.students.unassigned, 'active student')} not enrolled in a section`, to: '/admin/students?filter=unassigned', cta: 'Assign' });
+    if (data.sections.withoutAdviser) attention.push({ icon: 'user', text: `${plural(data.sections.withoutAdviser, 'section')} without an adviser`, to: '/admin/sections', cta: 'Fix' });
+    if (data.sections.withoutSubjects) attention.push({ icon: 'link', text: `${plural(data.sections.withoutSubjects, 'section')} with no subjects assigned`, to: '/admin/teaching-assignments', cta: 'Assign' });
+    if (data.teachers.withoutLoad) attention.push({ icon: 'layers', text: `${plural(data.teachers.withoutLoad, 'teacher')} without a teaching load`, to: '/admin/teaching-assignments', cta: 'View' });
   }
 
-  if (error || !stats) {
-    return (
-      <DashboardLayout
-        title="Admin dashboard"
-        subtitle="School overview, grade submissions and items that need attention."
-        nav={ADMIN_NAV}
-        schoolYear=""
-      >
-        <div className="col-span-12">
-          <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">
-            Failed to load dashboard data. Please try again.
-          </div>
-        </div>
-      </DashboardLayout>
-    );
-  }
-
-  const { students, teachers, sections, subjects, gradeSubmission, recentActivity, schoolYear } = stats;
-  const totalStudents = students.total;
-  const juniorHigh = students.juniorHigh;
-  const seniorHigh = students.seniorHigh;
+  const totals = data?.byGrade.reduce((a, g) => ({ locked: a.locked + g.locked, needed: a.needed + g.needed }), { locked: 0, needed: 0 });
 
   return (
-    <DashboardLayout
-      title="Admin dashboard"
-      subtitle="School overview, grade submissions and items that need attention."
-      nav={ADMIN_NAV}
-      schoolYear={`SY ${schoolYear.label} · Current`}
-    >
-      {/* Quick-action buttons */}
-      <div className="col-span-12 flex gap-2 flex-wrap mb-6">
-        <button className={pillClasses.primary} onClick={() => navigate('/admin/students')}>
-          + Add student
-        </button>
-        <button className={pillClasses.primary} onClick={() => navigate('/admin/teachers')}>
-          + Add teacher
-        </button>
-        <button className={pillClasses.primary} disabled>
-          + Create section
-        </button>
-        <button className={pillClasses.primary} disabled>
-          + Add subject
-        </button>
-        <button className={pillClasses.secondary} disabled>
-          Start new school year
-        </button>
-      </div>
+    <DashboardLayout title="Registrar dashboard" subtitle={data?.schoolYear ? `School year ${data.schoolYear.label} · Quarter ${data.quarter}` : 'Overview'}>
+      {isLoading ? (
+        <PageLoader rows={6} />
+      ) : error ? (
+        <Card>
+          <ErrorState error={error} onRetry={refetch} />
+        </Card>
+      ) : !data?.schoolYear ? (
+        <Card>
+          <EmptyState icon="calendar" title="No school year yet" description="Create a school year to start setting up sections and classes." action={<Link className="text-brand-800 font-semibold" to="/admin/school-years">Go to school years →</Link>} />
+        </Card>
+      ) : (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+            <StatTile tone="brand" icon="graduation" label="Enrolled students" value={data.students.enrolled.toLocaleString()} hint={`${data.students.juniorHigh} JHS · ${data.students.seniorHigh} SHS`} />
+            <StatTile icon="user" label="Teachers with a load" value={`${data.teachers.teaching}/${data.teachers.total}`} hint={`${data.sections.total} sections · ${data.subjects.total} subjects`} />
+            <StatTile icon="lock" label={`Q${data.quarter} grades submitted`} value={`${totals && totals.needed ? Math.round((totals.locked / totals.needed) * 100) : 0}%`} hint={`${totals?.locked.toLocaleString()} of ${totals?.needed.toLocaleString()} grades locked`}>
+              <Progress value={totals?.locked ?? 0} max={totals?.needed ?? 0} tone="success" />
+            </StatTile>
+            <StatTile tone="gold" icon="idcard" label="ID cards ready" value={`${data.idCards.ready}/${data.idCards.total}`} hint="Photo and signature uploaded" />
+          </div>
 
-      {/* Stat cards row */}
-      <div className="col-span-12 grid grid-cols-12 gap-4 mb-6">
-        {/* Students - hero maroon card */}
-        <div className="col-span-6 lg:col-span-6">
-          <StatCard
-            label="Students enrolled"
-            value={totalStudents}
-            sublabel={`Junior high: ${juniorHigh} · Senior high: ${seniorHigh}`}
-            variant="maroon"
-          >
-            <div className="space-y-2">
-              {students.byGrade.map((g) => {
-                const pct = totalStudents > 0 ? Math.round((g.count / totalStudents) * 100) : 0;
-                return (
-                  <div key={g.grade} className="flex items-center gap-3">
-                    <span className="w-[24px] text-[11px] font-semibold text-white">{g.grade}</span>
-                    <div className="flex-1 h-[8px] rounded-full bg-white/20 overflow-hidden">
-                      <div className="h-full" style={{ width: `${pct}%`, backgroundColor: g.isSeniorHigh ? '#FFD21F' : '#C8161D' }} />
+          <div className="grid lg:grid-cols-5 gap-6">
+            <Card className="lg:col-span-3">
+              <CardHeader title={`Quarter ${data.quarter} submission by grade level`} description="Share of grades encoded and locked by teachers" actions={<Link to="/admin/grade-locks" className="text-xs font-semibold text-brand-800 hover:underline">All sheets →</Link>} />
+              <div className="space-y-4">
+                {data.byGrade.map((g) => (
+                  <div key={g.grade}>
+                    <div className="flex items-baseline justify-between text-sm mb-1.5">
+                      <span className="font-semibold">
+                        {g.name} <span className="text-xs font-normal text-muted">· {plural(g.sections, 'section')} · {plural(g.students, 'student')}</span>
+                      </span>
+                      <span className="text-xs text-muted tabular-nums">
+                        {g.needed ? Math.round((g.locked / g.needed) * 100) : 0}% locked
+                      </span>
                     </div>
-                    <span className="w-[28px] text-[11px] text-[#F0BDBD] text-right">{g.count}</span>
-                  </div>
-                );
-              })}
-              <div className="mt-3 h-[8px] rounded-full bg-white/20 overflow-hidden flex">
-                <div className="h-full" style={{ width: totalStudents > 0 ? `${Math.round((juniorHigh / totalStudents) * 100)}%` : '50%', backgroundColor: '#C8161D' }} />
-                <div className="h-full" style={{ width: totalStudents > 0 ? `${Math.round((seniorHigh / totalStudents) * 100)}%` : '50%', backgroundColor: '#FFD21F' }} />
-              </div>
-              <div className="flex justify-between mt-1 text-[10px] text-[#F0BDBD]/80">
-                <span>Junior high</span>
-                <span>Senior high</span>
-              </div>
-            </div>
-          </StatCard>
-        </div>
-
-        {/* Teachers - hero maroon card */}
-        <div className="col-span-6 lg:col-span-3">
-          <StatCard
-            label="Teachers"
-            value={teachers.total}
-            sublabel="Faculty"
-            variant="maroon"
-          >
-            <div className="h-[8px] rounded-full bg-white/20 overflow-hidden mb-2 flex">
-              <div className="h-full" style={{ width: teachers.total > 0 ? `${Math.round((teachers.teaching / teachers.total) * 100)}%` : '50%', backgroundColor: '#15803d' }} />
-              <div className="h-full" style={{ width: teachers.total > 0 ? `${Math.round((teachers.withoutLoad / teachers.total) * 100)}%` : '50%', backgroundColor: '#FFD21F' }} />
-            </div>
-            <div className="flex justify-between mt-1 text-[10px] text-[#F0BDBD]/80">
-              <span>{teachers.teaching} teaching</span>
-              <span>{teachers.withoutLoad} without a load</span>
-            </div>
-          </StatCard>
-        </div>
-
-        {/* Sections - white card */}
-        <div className="col-span-6 lg:col-span-2">
-          <StatCard label="Sections" value={sections.total} sublabel="Grades 7–12" variant="white" />
-        </div>
-
-        {/* Subjects - pale yellow card */}
-        <div className="col-span-6 lg:col-span-2">
-          <StatCard 
-            label="Subjects" 
-            value={subjects.total} 
-            sublabel={subjects.withoutTeacher > 0 ? `${subjects.withoutTeacher} have no teacher` : 'All assigned'} 
-            variant="yellow" 
-          />
-        </div>
-      </div>
-
-      {/* Row: progress bars wide + needs attention narrow */}
-      <div className="col-span-12 grid grid-cols-12 gap-4">
-        {/* Quarter grade submission - 7 cols */}
-        <div className="col-span-7 lg:col-span-8">
-          <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <p className="text-[11px] font-semibold text-[#6B6B6B]">Quarter grade submission</p>
-                <p className="text-[15px] font-800 text-[#1B1F3B]">By grade level</p>
-              </div>
-              <span className="text-[11px] text-[#6B6B6B]">SY {schoolYear.label}</span>
-            </div>
-            <div className="space-y-3">
-              {gradeSubmission.map((g) => {
-                const pct = g.total > 0 ? Math.round((g.submitted / g.total) * 100) : 0;
-                return (
-                  <div key={g.grade} className="flex items-center gap-3">
-                    <span className="w-[24px] text-[12px] font-semibold text-[#1B1F3B]">{g.grade}</span>
-                    <div className="flex-1 h-[10px] rounded-full bg-[#E8E2DE] overflow-hidden">
-                      <ProgressBar value={g.submitted} max={g.total} status={pct < 60 ? 'warning' : 'brand'} />
+                    <div className="relative h-2 rounded-full bg-ink/5 overflow-hidden">
+                      <div className="absolute inset-y-0 left-0 bg-gold-200" style={{ width: `${g.needed ? (g.encoded / g.needed) * 100 : 0}%` }} />
+                      <div className="absolute inset-y-0 left-0 bg-brand-800" style={{ width: `${g.needed ? (g.locked / g.needed) * 100 : 0}%` }} />
                     </div>
-                    <span className="w-[32px] text-[12px] text-[#6B6B6B] text-right">{pct}%</span>
                   </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
+                ))}
+                <div className="flex gap-4 pt-1 text-xs text-muted">
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-brand-800" /> Locked</span>
+                  <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-gold-200" /> Encoded, not yet locked</span>
+                </div>
+              </div>
+            </Card>
 
-        {/* Needs attention - 5 cols pale yellow */}
-        <div className="col-span-5 lg:col-span-4">
-          <div className="bg-[#FFF1C2] border border-[#E6C200] rounded-[16px] p-6">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <p className="text-[11px] font-semibold text-[#8a6d00]">Needs attention</p>
-                <p className="text-[15px] font-800 text-[#8a6d00]">11 items</p>
-              </div>
-            </div>
-            <div className="space-y-3">
-              <div className="flex items-center justify-between bg-white/40 p-3 rounded-[8px] border border-[#E6C200]">
-                <div>
-                  <p className="text-[12px] font-semibold text-[#1B1F3B]">Unlock requests</p>
-                  <p className="text-[11px] text-[#8a6d00]/80">Grade sheets awaiting registrar approval</p>
-                </div>
-                <button className="px-3 py-1.5 rounded-full bg-[#FFD21F] text-[#1B1F3B] text-[11px] font-semibold">Review 3</button>
-              </div>
-              <div className="flex items-center justify-between bg-white/40 p-3 rounded-[8px] border border-[#E6C200]">
-                <div>
-                  <p className="text-[12px] font-semibold text-[#1B1F3B]">Subjects with no teacher</p>
-                  <p className="text-[11px] text-[#8a6d00]/80">Cannot encode grades until assigned</p>
-                </div>
-                {subjects.withoutTeacher > 0 && (
-                  <button className="px-3 py-1.5 rounded-full bg-[#FFD21F] text-[#1B1F3B] text-[11px] font-semibold">
-                    Assign {subjects.withoutTeacher}
-                  </button>
-                )}
-              </div>
-              <div className="flex items-center justify-between bg-white/40 p-3 rounded-[8px] border border-[#E6C200]">
-                <div>
-                  <p className="text-[12px] font-semibold text-[#1B1F3B]">Students with no section</p>
-                  <p className="text-[11px] text-[#8a6d00]/80">Not enrolled this school year</p>
-                </div>
-                <button className="px-3 py-1.5 rounded-full bg-[#FFD21F] text-[#1B1F3B] text-[11px] font-semibold">Place 2</button>
-              </div>
-            </div>
+            <Card className="lg:col-span-2">
+              <CardHeader title="Needs attention" />
+              {attention.length === 0 ? (
+                <EmptyState icon="checkCircle" title="All caught up" description="Nothing needs your action right now." />
+              ) : (
+                <ul className="divide-y divide-line -my-2">
+                  {attention.map((a) => (
+                    <li key={a.text} className="flex items-center gap-3 py-3">
+                      <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-warn-50 text-warn-700">
+                        <Icon name={a.icon} size={16} />
+                      </span>
+                      <p className="flex-1 text-sm">{a.text}</p>
+                      <Link to={a.to} className="text-xs font-semibold text-brand-800 hover:underline">
+                        {a.cta} →
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </Card>
           </div>
-        </div>
-      </div>
 
-      {/* Recent grade activity - full width */}
-      <div className="col-span-12 mt-6">
-        <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6">
-          <div className="flex items-center justify-between mb-4">
-            <div>
-              <p className="text-[11px] font-semibold text-[#6B6B6B]">Recent grade activity</p>
-              <p className="text-[15px] font-800 text-[#1B1F3B]">This week</p>
-            </div>
-            <button className="text-[12px] font-semibold text-[#6B0A0F] hover:text-[#C8161D]">
-              View audit log
-            </button>
-          </div>
-          <div className="border border-[#E8E2DE] rounded-[8px] overflow-hidden">
-            <table className="w-full text-left text-[13px]">
-              <thead>
-                <tr className="bg-[#F4F2EF] border-b border-[#E8E2DE]">
-                  <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Actor</th>
-                  <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Action</th>
-                  <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Entity</th>
-                  <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider text-right">Time</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-[#E8E2DE]">
-                {recentActivity.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="px-4 py-8 text-center text-[#6B6B6B] text-[13px]">
-                      No recent grade activity
-                    </td>
-                  </tr>
-                ) : (
-                  recentActivity.map((a) => (
-                    <tr key={a.id} className="hover:bg-[#FFF1C2]/30 transition-colors">
-                      <td className="px-4 py-3 text-[#1B1F3B] font-medium">{a.actor}</td>
-                      <td className="px-4 py-3"><StatusPill status={a.action === 'LOCK' ? 'Locked' : a.action === 'UNLOCK' ? 'Unlocked' : 'Edited'} /></td>
-                      <td className="px-4 py-3 text-[#1B1F3B]">{a.entity}</td>
-                      <td className="px-4 py-3 text-[#6B6B6B] text-right">{a.time}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </div>
+          <Card>
+            <CardHeader title="Recent activity" actions={<Link to="/admin/audit-log" className="text-xs font-semibold text-brand-800 hover:underline">Audit log →</Link>} />
+            {data.recentActivity.length === 0 ? (
+              <EmptyState icon="history" title="No activity yet" />
+            ) : (
+              <ul className="divide-y divide-line -my-2">
+                {data.recentActivity.map((a) => (
+                  <li key={a.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-3">
+                    <Badge tone={ACTION_TONE[a.action] ?? 'neutral'}>{a.action.replace(/_/g, ' ').toLowerCase()}</Badge>
+                    <p className="flex-1 min-w-[200px] text-sm">
+                      <span className="font-semibold">{a.actor}</span> <span className="text-ink-soft">{a.description}</span>
+                    </p>
+                    <span className="text-xs text-muted">{timeAgo(a.createdAt)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </Card>
         </div>
-      </div>
+      )}
     </DashboardLayout>
   );
 }

@@ -1,58 +1,143 @@
+import { Fragment, useEffect, useState } from 'react';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { DashboardLayout } from '../../components/DashboardLayout';
-import { ADMIN_NAV } from '../../constants/navigation';
-import { useQuery } from '@tanstack/react-query';
+import { Badge, Card, EmptyState, ErrorState, IconButton, PageLoader, Pagination, SearchInput, Select, Table, Toolbar } from '../../components/ui';
+import { useDebounced } from '../../hooks/useReference';
 import api from '../../lib/api';
+import { formatDateTime } from '../../lib/format';
+import type { Pagination as P } from '../../types';
+
+interface Log {
+  id: string;
+  action: string;
+  entity: string;
+  entityId: string;
+  before: Record<string, unknown> | null;
+  after: Record<string, unknown> | null;
+  ipAddress: string | null;
+  createdAt: string;
+  user: { email: string; role: string };
+}
+
+const TONE: Record<string, 'success' | 'warn' | 'danger' | 'info' | 'neutral'> = {
+  CREATE: 'info', ENCODE: 'info', ENROLL: 'info', UPDATE: 'neutral', LOCK: 'success',
+  UNLOCK: 'warn', REQUEST_UNLOCK: 'warn', REMIND: 'warn', DELETE: 'danger', REJECT_UNLOCK: 'danger', UNENROLL: 'danger',
+};
+
+function summary(l: Log) {
+  const a = (l.after ?? {}) as Record<string, any>;
+  const b = (l.before ?? {}) as Record<string, any>;
+  if (a.section && a.subject) return `${a.subject} · ${a.section}${a.quarter ? ` · Q${a.quarter}` : ''}${a.changes ? ` · ${a.changes.length} change(s)` : a.count ? ` · ${a.count} grade(s)` : ''}`;
+  const name = a.name ?? a.title ?? a.label ?? a.code ?? a.email ?? a.lrn ?? b.name ?? b.title ?? b.label ?? b.code ?? b.email ?? b.lrn;
+  return name ? String(name) : l.entityId;
+}
 
 export default function AuditLog() {
-  const { data: logs, isLoading } = useQuery({
-    queryKey: ['admin', 'audit-logs'],
-    queryFn: async () => {
-      const res = await api.get<{ auditLogs: any[] }>('/admin/audit-logs?limit=100');
-      return res.data.auditLogs;
-    },
+  const [action, setAction] = useState('');
+  const [entity, setEntity] = useState('');
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const q = useDebounced(search);
+  useEffect(() => setPage(1), [action, entity, q]);
+
+  const filters = useQuery({
+    queryKey: ['admin', 'audit-filters'],
+    queryFn: () => api.get<{ actions: string[]; entities: string[] }>('/admin/audit-logs/filters').then((r) => r.data),
   });
+  const list = useQuery({
+    queryKey: ['admin', 'audit', { action, entity, q, page }],
+    queryFn: () =>
+      api.get<{ logs: Log[]; pagination: P }>('/admin/audit-logs', { params: { page, limit: 30, action: action || undefined, entity: entity || undefined, search: q || undefined } }).then((r) => r.data),
+    placeholderData: keepPreviousData,
+  });
+  const pg = list.data?.pagination;
 
   return (
-    <DashboardLayout title="Audit Log" subtitle="Track all administrative actions" nav={ADMIN_NAV} schoolYear="SY 2024–2025">
-      <div className="col-span-12">
-        <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6">
-          <h2 className="text-[18px] font-800 text-[#1B1F3B] mb-6">Audit Log</h2>
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#6B0A0F]"></div>
-            </div>
-          ) : (
-            <div className="border border-[#E8E2DE] rounded-[8px] overflow-hidden">
-              <table className="w-full text-left text-[13px]">
-                <thead>
-                  <tr className="bg-[#F4F2EF]">
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase">Time</th>
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase">User</th>
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase">Action</th>
-                    <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase">Entity</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-[#E8E2DE]">
-                  {logs?.map(log => (
-                    <tr key={log.id} className="hover:bg-[#FFF1C2]/30">
-                      <td className="px-4 py-3 text-[#6B6B6B]">{new Date(log.createdAt).toLocaleString()}</td>
-                      <td className="px-4 py-3 text-[#1B1F3B]">{log.user?.email}</td>
-                      <td className="px-4 py-3">
-                        <span className={`px-2 py-1 rounded text-[10px] font-semibold ${
-                          log.action === 'CREATE' ? 'bg-green-100 text-green-800' :
-                          log.action === 'UPDATE' ? 'bg-blue-100 text-blue-800' :
-                          'bg-red-100 text-red-800'
-                        }`}>{log.action}</span>
+    <DashboardLayout title="Audit log" subtitle="Every change to records and grades, newest first.">
+      <Card>
+        <Toolbar>
+          <SearchInput value={search} onChange={setSearch} placeholder="Search by user email…" />
+          <div className="w-44">
+            <Select value={action} onChange={(e) => setAction(e.target.value)} aria-label="Action">
+              <option value="">All actions</option>
+              {filters.data?.actions.map((a) => <option key={a} value={a}>{a.replace(/_/g, ' ').toLowerCase()}</option>)}
+            </Select>
+          </div>
+          <div className="w-44">
+            <Select value={entity} onChange={(e) => setEntity(e.target.value)} aria-label="Record type">
+              <option value="">All records</option>
+              {filters.data?.entities.map((e) => <option key={e} value={e}>{e}</option>)}
+            </Select>
+          </div>
+        </Toolbar>
+
+        {list.isLoading ? (
+          <PageLoader />
+        ) : list.error ? (
+          <ErrorState error={list.error} onRetry={list.refetch} />
+        ) : !list.data?.logs.length ? (
+          <EmptyState icon="history" title="No entries" />
+        ) : (
+          <>
+            <Table>
+              <thead className="border-b border-line">
+                <tr>
+                  <th className="th">When</th>
+                  <th className="th">User</th>
+                  <th className="th">Action</th>
+                  <th className="th">Record</th>
+                  <th className="th" />
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-line">
+                {list.data.logs.map((l) => (
+                  <Fragment key={l.id}>
+                    <tr className="hover:bg-canvas/60">
+                      <td className="td whitespace-nowrap text-xs text-muted">{formatDateTime(l.createdAt)}</td>
+                      <td className="td">
+                        <p className="truncate max-w-[220px]">{l.user.email}</p>
+                        <p className="text-xs text-muted capitalize">{l.user.role.toLowerCase()}</p>
                       </td>
-                      <td className="px-4 py-3 text-[#6B6B6B]">{log.entity}</td>
+                      <td className="td"><Badge tone={TONE[l.action] ?? 'neutral'}>{l.action.replace(/_/g, ' ').toLowerCase()}</Badge></td>
+                      <td className="td">
+                        <p className="font-medium">{l.entity}</p>
+                        <p className="text-xs text-muted truncate max-w-sm">{summary(l)}</p>
+                      </td>
+                      <td className="td text-right">
+                        {(l.before || l.after) && (
+                          <IconButton icon={expanded === l.id ? 'chevronDown' : 'chevronRight'} label="Show details" onClick={() => setExpanded(expanded === l.id ? null : l.id)} />
+                        )}
+                      </td>
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
-      </div>
+                    {expanded === l.id && (
+                      <tr className="bg-canvas/60">
+                        <td colSpan={5} className="px-4 pb-4">
+                          <div className="grid md:grid-cols-2 gap-3 text-xs">
+                            {l.before && (
+                              <div>
+                                <p className="font-semibold text-muted mb-1">Before</p>
+                                <pre className="rounded-lg bg-white border border-line p-3 overflow-x-auto max-h-60">{JSON.stringify(l.before, null, 2)}</pre>
+                              </div>
+                            )}
+                            {l.after && (
+                              <div>
+                                <p className="font-semibold text-muted mb-1">After</p>
+                                <pre className="rounded-lg bg-white border border-line p-3 overflow-x-auto max-h-60">{JSON.stringify(l.after, null, 2)}</pre>
+                              </div>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </Table>
+            {pg && <Pagination page={pg.page} totalPages={pg.totalPages} total={pg.total} onChange={setPage} />}
+          </>
+        )}
+      </Card>
     </DashboardLayout>
   );
 }

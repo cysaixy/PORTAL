@@ -1,167 +1,94 @@
 import { Request, Response } from 'express';
+import { Prisma, Role } from '@prisma/client';
 import prisma from '../config/database';
-import logger from '../config/logger';
+import { audit, HttpError, insensitive, paginate, str } from '../lib/http';
 import { allowedEmailSchema, paginationSchema } from '../lib/validation';
 
-/**
- * GET /api/admin/allowed-emails
- * List allowed emails with pagination and search
- */
+/** GET /api/admin/allowed-emails?role=&search= */
 export async function listAllowedEmails(req: Request, res: Response) {
-  try {
-    const { page, limit, search } = paginationSchema.parse(req.query);
-    const skip = (page - 1) * limit;
+  const { page, limit, search } = paginationSchema.parse(req.query);
+  const role = str(req.query.role);
 
-    const where: any = {};
+  const where: Prisma.UserWhereInput = {
+    ...(role && Object.values(Role).includes(role as Role) && { role: role as Role }),
+    ...(search && { email: insensitive(search) }),
+  };
 
-    if (search) {
-      where.OR = [
-        { email: { contains: search, mode: 'insensitive' } },
-        { role: { contains: search, mode: 'insensitive' } },
-      ];
-    }
-
-    const [emails, total] = await prisma.$transaction([
-      prisma.user.findMany({
-        where,
-        skip,
-        take: limit,
-        orderBy: { email: 'asc' },
-        include: {
-          student: {
-            select: { id: true, lrn: true, firstName: true, lastName: true },
-          },
-          teacher: {
-            select: { id: true, firstName: true, lastName: true, department: true },
-          },
-        },
-      }),
-      prisma.user.count({ where }),
-    ]);
-
-    res.json({
-      emails,
-      pagination: {
-        page,
-        limit,
-        total,
-        totalPages: Math.ceil(total / limit),
+  const [users, total, counts] = await prisma.$transaction([
+    prisma.user.findMany({
+      where,
+      skip: (page - 1) * limit,
+      take: limit,
+      orderBy: [{ role: 'asc' }, { email: 'asc' }],
+      include: {
+        student: { select: { id: true, lrn: true, firstName: true, lastName: true } },
+        teacher: { select: { id: true, firstName: true, lastName: true } },
       },
-    });
-  } catch (error) {
-    logger.error('List allowed emails error:', error);
-    res.status(500).json({ error: 'Failed to fetch allowed emails' });
-  }
+    }),
+    prisma.user.count({ where }),
+    prisma.user.groupBy({ by: ['role'], orderBy: { role: 'asc' }, _count: { _all: true } }),
+  ]);
+
+  res.json({
+    emails: users.map((u) => ({
+      id: u.id,
+      email: u.email,
+      role: u.role,
+      isActive: u.isActive,
+      hasSignedIn: !!u.firebaseUid,
+      createdAt: u.createdAt,
+      profile: u.student ?? u.teacher ?? null,
+    })),
+    counts: Object.fromEntries(counts.map((c) => [c.role, (c._count as { _all: number })._all])),
+    pagination: paginate(page, limit, total),
+  });
 }
 
-/**
- * POST /api/admin/allowed-emails
- * Add an email to the allowlist
- */
+/** POST /api/admin/allowed-emails — used for admin accounts (students/teachers get one via their profile) */
 export async function addAllowedEmail(req: Request, res: Response) {
-  try {
-    const data = allowedEmailSchema.parse(req.body);
-
-    // Check if email already exists
-    const existing = await prisma.user.findUnique({
-      where: { email: data.email },
-    });
-
-    if (existing) {
-      return res.status(409).json({ error: 'Email already in allowlist' });
-    }
-
-    const user = await prisma.user.create({
-      data: {
-        email: data.email,
-        role: data.role,
-        isActive: data.isActive,
-      },
-    });
-
-    logger.info(`Allowed email added: ${user.email} (${user.role})`);
-
-    res.status(201).json({ user });
-  } catch (error: any) {
-    if (error.code === 'P2002') {
-      return res.status(409).json({ error: 'Email already in allowlist' });
-    }
-    logger.error('Add allowed email error:', error);
-    res.status(500).json({ error: 'Failed to add allowed email' });
+  const data = allowedEmailSchema.parse(req.body);
+  if (await prisma.user.findUnique({ where: { email: data.email } })) {
+    throw new HttpError(409, 'That email is already on the allowlist');
   }
+  const user = await prisma.user.create({ data });
+  await audit(req, 'CREATE', 'AllowedEmail', user.id, undefined, { email: user.email, role: user.role });
+  res.status(201).json({ user });
 }
 
-/**
- * PUT /api/admin/allowed-emails/:id
- * Update an allowed email (role, status)
- */
+/** PUT /api/admin/allowed-emails/:id — toggle active (role changes are blocked for linked profiles) */
 export async function updateAllowedEmail(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-    const data = allowedEmailSchema.partial().parse(req.body);
+  const { id } = req.params;
+  const data = allowedEmailSchema.partial().parse(req.body);
+  const existing = await prisma.user.findUnique({ where: { id }, include: { student: true, teacher: true } });
+  if (!existing) throw new HttpError(404, 'Account not found');
 
-    const user = await prisma.user.update({
-      where: { id },
-      data: {
-        ...(data.email && { email: data.email }),
-        ...(data.role && { role: data.role }),
-        ...(data.isActive !== undefined && { isActive: data.isActive }),
-      },
-      include: {
-        student: {
-          select: { id: true, lrn: true, firstName: true, lastName: true },
-        },
-        teacher: {
-          select: { id: true, firstName: true, lastName: true, department: true },
-        },
-      },
-    });
-
-    res.json({ user });
-  } catch (error: any) {
-    if (error.code === 'P2025') {
-      return res.status(404).json({ error: 'Allowed email not found' });
-    }
-    if (error.code === 'P2002') {
-      return res.status(409).json({ error: 'Email already exists' });
-    }
-    logger.error('Update allowed email error:', error);
-    res.status(500).json({ error: 'Failed to update allowed email' });
+  if (id === req.user!.id && data.isActive === false) throw new HttpError(400, 'You cannot deactivate your own account');
+  if (data.role && data.role !== existing.role && (existing.student || existing.teacher)) {
+    throw new HttpError(400, 'This account has a student/teacher profile; its role cannot be changed');
   }
+
+  const user = await prisma.user.update({
+    where: { id },
+    data: {
+      ...(data.email && data.email !== existing.email && { email: data.email, firebaseUid: null }),
+      ...(data.role && { role: data.role }),
+      ...(data.isActive !== undefined && { isActive: data.isActive }),
+    },
+  });
+  await audit(req, 'UPDATE', 'AllowedEmail', id, { isActive: existing.isActive, role: existing.role }, data);
+  res.json({ user });
 }
 
-/**
- * DELETE /api/admin/allowed-emails/:id
- * Remove an email from the allowlist
- */
+/** DELETE /api/admin/allowed-emails/:id — only for accounts without a profile */
 export async function deleteAllowedEmail(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-
-    const user = await prisma.user.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: { student: true, teacher: true },
-        },
-      },
-    });
-
-    if (!user) {
-      return res.status(404).json({ error: 'Allowed email not found' });
-    }
-
-    if (user._count.student > 0 || user._count.teacher > 0) {
-      return res.status(400).json({
-        error: 'Cannot remove email with linked profile. Deactivate instead.',
-      });
-    }
-
-    await prisma.user.delete({ where: { id } });
-
-    res.json({ message: 'Allowed email removed' });
-  } catch (error) {
-    logger.error('Delete allowed email error:', error);
-    res.status(500).json({ error: 'Failed to remove allowed email' });
+  const { id } = req.params;
+  const existing = await prisma.user.findUnique({ where: { id }, include: { student: true, teacher: true } });
+  if (!existing) throw new HttpError(404, 'Account not found');
+  if (id === req.user!.id) throw new HttpError(400, 'You cannot remove your own account');
+  if (existing.student || existing.teacher) {
+    throw new HttpError(400, 'Remove this person from Students/Teachers instead, or deactivate the account');
   }
+  await prisma.user.delete({ where: { id } });
+  await audit(req, 'DELETE', 'AllowedEmail', id, { email: existing.email });
+  res.json({ message: 'Removed from allowlist' });
 }

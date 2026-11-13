@@ -1,405 +1,298 @@
-import { useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { DashboardLayout } from '../../components/DashboardLayout';
-import { Modal } from '../../components/Modal';
-import { ADMIN_NAV } from '../../constants/navigation';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import api from '../../lib/api';
+import {
+  Avatar, Badge, Button, Card, ConfirmDialog, EmptyState, ErrorState, Field, fieldErrors, IconButton, Input, Modal, PageLoader,
+  Pagination, SearchInput, Segmented, Select, Switch, Table, Toolbar, useConfirm,
+} from '../../components/ui';
+import { useAllSections, useApiMutation, useDebounced, useGradeLevels } from '../../hooks/useReference';
+import api, { assetUrl } from '../../lib/api';
+import { toDateInput } from '../../lib/format';
+import type { Pagination as P, Section } from '../../types';
 
-interface Student {
+interface StudentRow {
   id: string;
   lrn: string;
   firstName: string;
+  middleName: string | null;
   lastName: string;
-  middleName?: string;
-  suffix?: string;
+  suffix: string | null;
   birthdate: string;
   sex: 'M' | 'F';
   guardianName: string;
   guardianContact: string;
-  guardianEmail?: string;
+  guardianEmail: string | null;
   address: string;
-  user: {
-    email: string;
-    isActive: boolean;
-  };
-  enrollments: Array<{
-    section: {
-      name: string;
-      gradeLevel: {
-        name: string;
-      };
-    };
-  }>;
+  photoUrl: string | null;
+  user: { email: string; isActive: boolean };
+  currentSection: (Section & { strand: { code: string } | null }) | null;
 }
 
-interface StudentFormData {
-  email: string;
-  lrn: string;
-  firstName: string;
-  lastName: string;
-  birthdate: string;
-  sex: 'M' | 'F';
-  guardianName: string;
-  guardianContact: string;
-  guardianEmail: string;
-  address: string;
-  role: 'STUDENT';
-}
+const blank = {
+  lrn: '', email: '', firstName: '', middleName: '', lastName: '', suffix: '', birthdate: '', sex: 'M' as 'M' | 'F',
+  guardianName: '', guardianContact: '', guardianEmail: '', address: '', sectionId: '', isActive: true,
+};
+type FormState = typeof blank;
 
-export default function AdminStudents() {
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [searchQuery, setSearchQuery] = useState('');
-  const queryClient = useQueryClient();
+export default function Students() {
+  const [params, setParams] = useSearchParams();
+  const filter = (params.get('filter') as 'all' | 'unassigned' | 'inactive') || 'all';
+  const [search, setSearch] = useState('');
+  const [grade, setGrade] = useState('');
+  const [page, setPage] = useState(1);
+  const q = useDebounced(search);
+  const { data: levels = [] } = useGradeLevels();
+  const { data: sections = [] } = useAllSections();
 
-  const { data: response, isLoading } = useQuery({
-    queryKey: ['admin', 'students'],
-    queryFn: async () => {
-      const response = await api.get<{ students: Student[]; pagination: any }>('/admin/students?limit=1000');
-      return response.data;
-    },
+  useEffect(() => setPage(1), [q, grade, filter]);
+
+  const list = useQuery({
+    queryKey: ['admin', 'students', { q, grade, filter, page }],
+    queryFn: () =>
+      api
+        .get<{ students: StudentRow[]; pagination: P }>('/admin/students', {
+          params: {
+            page,
+            limit: 25,
+            search: q || undefined,
+            gradeLevelId: grade || undefined,
+            unassigned: filter === 'unassigned' ? 1 : undefined,
+            status: filter === 'inactive' ? 'inactive' : undefined,
+          },
+        })
+        .then((r) => r.data),
+    placeholderData: keepPreviousData,
   });
 
-  const students = response?.students;
+  const [editing, setEditing] = useState<StudentRow | 'new' | null>(null);
+  const [form, setForm] = useState<FormState>(blank);
+  const [errors, setErrors] = useState<Record<string, string>>({});
+  const confirm = useConfirm<StudentRow>();
 
-  const createStudentMutation = useMutation({
-    mutationFn: async (data: StudentFormData) => {
-      const response = await api.post('/admin/students', data);
-      return response.data;
+  const save = useApiMutation(
+    (f: FormState) => {
+      if (editing === 'new') return api.post('/admin/students', { ...f, sectionId: f.sectionId || null });
+      const { sectionId: _ignored, ...rest } = f;
+      return api.put(`/admin/students/${(editing as StudentRow).id}`, rest);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'students'] });
-      setIsAddModalOpen(false);
-    },
+    { success: editing === 'new' ? 'Student added' : 'Student updated', invalidate: [['admin']], onSuccess: () => setEditing(null) }
+  );
+  const toggleActive = useApiMutation((s: StudentRow) => api.put(`/admin/students/${s.id}`, { isActive: !s.user.isActive }), {
+    success: (s) => `${s.firstName} ${s.user.isActive ? 'deactivated' : 'reactivated'}`,
+    invalidate: [['admin', 'students']],
   });
+  const remove = useApiMutation((s: StudentRow) => api.delete(`/admin/students/${s.id}`), { success: 'Student deleted', invalidate: [['admin']], onSuccess: confirm.close });
 
-  const deleteStudentMutation = useMutation({
-    mutationFn: async (studentId: string) => {
-      await api.delete(`/admin/students/${studentId}`);
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['admin', 'students'] });
-    },
-  });
-
-  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    const formData = new FormData(e.currentTarget);
-    
-    const data: StudentFormData = {
-      email: formData.get('email') as string,
-      lrn: formData.get('lrn') as string,
-      firstName: formData.get('firstName') as string,
-      lastName: formData.get('lastName') as string,
-      birthdate: formData.get('birthdate') as string,
-      sex: formData.get('sex') as 'M' | 'F',
-      guardianName: formData.get('guardianName') as string,
-      guardianContact: formData.get('guardianContact') as string,
-      guardianEmail: formData.get('guardianEmail') as string,
-      address: formData.get('address') as string,
-      role: 'STUDENT',
-    };
-
-    createStudentMutation.mutate(data);
-  };
-
-  const handleDelete = async (studentId: string, studentName: string) => {
-    if (confirm(`Are you sure you want to delete ${studentName}? This action cannot be undone.`)) {
-      deleteStudentMutation.mutate(studentId);
-    }
-  };
-
-  const filteredStudents = students?.filter(student => {
-    const query = searchQuery.toLowerCase();
-    return (
-      student.firstName.toLowerCase().includes(query) ||
-      student.lastName.toLowerCase().includes(query) ||
-      student.lrn.includes(query) ||
-      student.user.email.toLowerCase().includes(query)
+  const open = (s: StudentRow | 'new') => {
+    setErrors({});
+    setForm(
+      s === 'new'
+        ? blank
+        : {
+            lrn: s.lrn, email: s.user.email, firstName: s.firstName, middleName: s.middleName ?? '', lastName: s.lastName, suffix: s.suffix ?? '',
+            birthdate: toDateInput(s.birthdate), sex: s.sex, guardianName: s.guardianName, guardianContact: s.guardianContact,
+            guardianEmail: s.guardianEmail ?? '', address: s.address, sectionId: s.currentSection?.id ?? '', isActive: s.user.isActive,
+          }
     );
-  });
+    setEditing(s);
+  };
+  const submit = (e: FormEvent) => {
+    e.preventDefault();
+    save.mutate(form, { onError: (err) => setErrors(fieldErrors(err)) });
+  };
+  const set = (k: keyof FormState) => (e: { target: { value: string } }) => setForm({ ...form, [k]: e.target.value });
+
+  const students = list.data?.students ?? [];
+  const pg = list.data?.pagination;
 
   return (
-    <DashboardLayout
-      title="Students"
-      subtitle="Manage student records and enrollments."
-      nav={ADMIN_NAV}
-      schoolYear="SY 2024–2025"
-    >
-      <div className="col-span-12">
-        <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6">
-          {/* Header */}
-          <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-6">
-            <div>
-              <h2 className="text-[18px] font-800 text-[#1B1F3B]">Students</h2>
-              <p className="text-[12px] text-[#6B6B6B] mt-1">
-                {students?.length || 0} total students
-              </p>
-            </div>
-            <div className="flex gap-3 w-full md:w-auto">
-              <input
-                type="text"
-                placeholder="Search by name, LRN, or email..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="flex-1 md:w-64 px-4 py-2 rounded-full border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-              />
-              <button
-                onClick={() => setIsAddModalOpen(true)}
-                className="px-6 py-2.5 rounded-full bg-[#FFD21F] text-[#1B1F3B] text-[13px] font-semibold hover:bg-[#E6C200] whitespace-nowrap"
-              >
-                Add Student
-              </button>
-            </div>
-          </div>
-
-          {/* Table */}
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#6B0A0F]"></div>
-            </div>
-          ) : (
-            <div className="border border-[#E8E2DE] rounded-[8px] overflow-hidden">
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-[13px]">
-                  <thead>
-                    <tr className="bg-[#F4F2EF]">
-                      <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">LRN</th>
-                      <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Name</th>
-                      <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Email</th>
-                      <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Section</th>
-                      <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Sex</th>
-                      <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider">Status</th>
-                      <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase tracking-wider text-right">Actions</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#E8E2DE]">
-                    {filteredStudents && filteredStudents.length > 0 ? (
-                      filteredStudents.map((student) => (
-                        <tr key={student.id} className="hover:bg-[#FFF1C2]/30 transition-colors">
-                          <td className="px-4 py-3 text-[#1B1F3B] font-medium">{student.lrn}</td>
-                          <td className="px-4 py-3 text-[#1B1F3B]">
-                            {student.firstName} {student.lastName}
-                          </td>
-                          <td className="px-4 py-3 text-[#6B6B6B]">{student.user.email}</td>
-                          <td className="px-4 py-3 text-[#6B6B6B]">
-                            {student.enrollments && student.enrollments.length > 0
-                              ? student.enrollments[0].section.name
-                              : 'Not enrolled'}
-                          </td>
-                          <td className="px-4 py-3 text-[#6B6B6B]">{student.sex}</td>
-                          <td className="px-4 py-3">
-                            {student.user.isActive ? (
-                              <span className="inline-flex items-center px-2 py-1 rounded-full bg-green-100 text-green-800 text-[10px] font-semibold">
-                                Active
-                              </span>
-                            ) : (
-                              <span className="inline-flex items-center px-2 py-1 rounded-full bg-gray-100 text-gray-800 text-[10px] font-semibold">
-                                Inactive
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-4 py-3 text-right">
-                            <button
-                              onClick={() => handleDelete(student.id, `${student.firstName} ${student.lastName}`)}
-                              className="text-[12px] text-red-600 hover:text-red-800 font-medium"
-                              disabled={deleteStudentMutation.isPending}
-                            >
-                              Delete
-                            </button>
-                          </td>
-                        </tr>
-                      ))
-                    ) : (
-                      <tr>
-                        <td colSpan={7} className="px-4 py-8 text-center text-[#6B6B6B]">
-                          {searchQuery ? 'No students found matching your search.' : 'No students yet. Click "Add Student" to get started.'}
-                        </td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+    <DashboardLayout title="Students" subtitle="Student records and their access to the portal." actions={<Button variant="primary" icon="plus" onClick={() => open('new')}>Add student</Button>}>
+      <Card>
+        <Toolbar>
+          <Segmented
+            value={filter}
+            onChange={(v) => setParams(v === 'all' ? {} : { filter: v })}
+            options={[
+              { value: 'all', label: 'All' },
+              { value: 'unassigned', label: 'Not enrolled' },
+              { value: 'inactive', label: 'Inactive' },
+            ]}
+          />
+          <SearchInput value={search} onChange={setSearch} placeholder="Search name or LRN…" />
+          {filter !== 'unassigned' && (
+            <div className="w-40">
+              <Select value={grade} onChange={(e) => setGrade(e.target.value)} aria-label="Grade level">
+                <option value="">All grades</option>
+                {levels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+              </Select>
             </div>
           )}
-        </div>
-      </div>
+        </Toolbar>
 
-      {/* Add Student Modal */}
+        {list.isLoading ? (
+          <PageLoader />
+        ) : list.error ? (
+          <ErrorState error={list.error} onRetry={list.refetch} />
+        ) : students.length === 0 ? (
+          <EmptyState
+            icon="graduation"
+            title={filter === 'unassigned' ? 'Everyone is enrolled' : 'No students found'}
+            description={filter === 'unassigned' ? 'All active students have a section this school year.' : 'Try another search or filter.'}
+          />
+        ) : (
+          <>
+            <Table>
+              <thead className="border-b border-line">
+                <tr>
+                  <th className="th">Student</th>
+                  <th className="th">LRN</th>
+                  <th className="th">Section</th>
+                  <th className="th">Guardian</th>
+                  <th className="th">Active</th>
+                  <th className="th" />
+                </tr>
+              </thead>
+              <tbody className={list.isFetching ? 'opacity-60 divide-y divide-line' : 'divide-y divide-line'}>
+                {students.map((s) => (
+                  <tr key={s.id} className="hover:bg-canvas/60">
+                    <td className="td">
+                      <div className="flex items-center gap-3">
+                        <Avatar name={`${s.firstName} ${s.lastName}`} src={assetUrl(s.photoUrl)} size={34} />
+                        <div className="min-w-0">
+                          <p className="font-semibold truncate">{s.lastName}, {s.firstName}{s.suffix ? ` ${s.suffix}` : ''}</p>
+                          <p className="text-xs text-muted truncate">{s.user.email}</p>
+                        </div>
+                      </div>
+                    </td>
+                    <td className="td font-mono text-xs">{s.lrn}</td>
+                    <td className="td whitespace-nowrap">
+                      {s.currentSection ? (
+                        <>
+                          {s.currentSection.name}
+                          <span className="block text-xs text-muted">{s.currentSection.gradeLevel.name}</span>
+                        </>
+                      ) : (
+                        <Badge tone="warn">Not enrolled</Badge>
+                      )}
+                    </td>
+                    <td className="td">
+                      <p className="truncate max-w-[180px]">{s.guardianName}</p>
+                      <p className="text-xs text-muted">{s.guardianContact}</p>
+                    </td>
+                    <td className="td">
+                      <Switch checked={s.user.isActive} onChange={() => toggleActive.mutate(s)} label={`Account active for ${s.firstName}`} />
+                    </td>
+                    <td className="td">
+                      <div className="flex justify-end gap-1">
+                        <IconButton icon="edit" label="Edit" onClick={() => open(s)} />
+                        <IconButton icon="trash" tone="danger" label="Delete" onClick={() => confirm.ask(s)} />
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+            {pg && <Pagination page={pg.page} totalPages={pg.totalPages} total={pg.total} onChange={setPage} />}
+          </>
+        )}
+      </Card>
+
       <Modal
-        isOpen={isAddModalOpen}
-        onClose={() => setIsAddModalOpen(false)}
-        title="Add New Student"
+        open={editing !== null}
+        onClose={() => setEditing(null)}
+        size="lg"
+        title={editing === 'new' ? 'Add student' : 'Edit student'}
+        description="The email is the Google account the student will sign in with."
+        footer={
+          <>
+            <Button onClick={() => setEditing(null)}>Cancel</Button>
+            <Button variant="primary" type="submit" form="student-form" loading={save.isPending}>Save student</Button>
+          </>
+        }
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            {/* Email */}
-            <div className="md:col-span-2">
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                Email <span className="text-red-600">*</span>
-              </label>
-              <input
-                type="email"
-                name="email"
-                required
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-                placeholder="student@example.com"
-              />
-            </div>
-
-            {/* LRN */}
-            <div>
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                LRN (12 digits) <span className="text-red-600">*</span>
-              </label>
-              <input
-                type="text"
-                name="lrn"
-                required
-                maxLength={12}
-                pattern="[0-9]{12}"
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-                placeholder="120240000101"
-              />
-            </div>
-
-            {/* Sex */}
-            <div>
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                Sex <span className="text-red-600">*</span>
-              </label>
-              <select
-                name="sex"
-                required
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-              >
+        <form id="student-form" onSubmit={submit} className="space-y-6">
+          <fieldset className="grid sm:grid-cols-6 gap-4">
+            <legend className="sm:col-span-6 text-xs font-bold uppercase tracking-wider text-muted mb-1">Identity</legend>
+            <Field label="First name" required error={errors.firstName} className="sm:col-span-2">
+              <Input value={form.firstName} onChange={set('firstName')} invalid={!!errors.firstName} autoFocus />
+            </Field>
+            <Field label="Middle name" className="sm:col-span-2">
+              <Input value={form.middleName} onChange={set('middleName')} />
+            </Field>
+            <Field label="Last name" required error={errors.lastName} className="sm:col-span-2">
+              <Input value={form.lastName} onChange={set('lastName')} invalid={!!errors.lastName} />
+            </Field>
+            <Field label="Suffix" className="sm:col-span-1">
+              <Input value={form.suffix} onChange={set('suffix')} placeholder="Jr." />
+            </Field>
+            <Field label="Sex" required className="sm:col-span-1">
+              <Select value={form.sex} onChange={set('sex')}>
                 <option value="M">Male</option>
                 <option value="F">Female</option>
-              </select>
-            </div>
+              </Select>
+            </Field>
+            <Field label="Birthdate" required error={errors.birthdate} className="sm:col-span-2">
+              <Input type="date" value={form.birthdate} onChange={set('birthdate')} invalid={!!errors.birthdate} />
+            </Field>
+            <Field label="LRN" required error={errors.lrn} hint="12-digit Learner Reference Number" className="sm:col-span-2">
+              <Input inputMode="numeric" maxLength={12} value={form.lrn} onChange={(e) => setForm({ ...form, lrn: e.target.value.replace(/\D/g, '') })} invalid={!!errors.lrn} />
+            </Field>
+          </fieldset>
 
-            {/* First Name */}
-            <div>
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                First Name <span className="text-red-600">*</span>
-              </label>
-              <input
-                type="text"
-                name="firstName"
-                required
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-              />
-            </div>
+          <fieldset className="grid sm:grid-cols-2 gap-4">
+            <legend className="sm:col-span-2 text-xs font-bold uppercase tracking-wider text-muted mb-1">Account & enrollment</legend>
+            <Field label="Google account email" required error={errors.email}>
+              <Input type="email" value={form.email} onChange={set('email')} invalid={!!errors.email} />
+            </Field>
+            {editing === 'new' ? (
+              <Field label="Section (current school year)" hint="Optional — you can enroll later from Sections">
+                <Select value={form.sectionId} onChange={set('sectionId')}>
+                  <option value="">Not yet</option>
+                  {sections.map((s) => (
+                    <option key={s.id} value={s.id} disabled={s._count.students >= s.capacity}>
+                      {s.name} ({s._count.students}/{s.capacity})
+                    </option>
+                  ))}
+                </Select>
+              </Field>
+            ) : (
+              <Field label="Portal access">
+                <label className="flex h-10 items-center gap-3">
+                  <Switch checked={form.isActive} onChange={(v) => setForm({ ...form, isActive: v })} label="Account active" />
+                  <span className="text-sm">{form.isActive ? 'Can sign in' : 'Blocked from signing in'}</span>
+                </label>
+              </Field>
+            )}
+          </fieldset>
 
-            {/* Last Name */}
-            <div>
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                Last Name <span className="text-red-600">*</span>
-              </label>
-              <input
-                type="text"
-                name="lastName"
-                required
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-              />
-            </div>
-
-            {/* Birthdate */}
-            <div>
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                Birthdate <span className="text-red-600">*</span>
-              </label>
-              <input
-                type="date"
-                name="birthdate"
-                required
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-              />
-            </div>
-
-            {/* Guardian Name */}
-            <div>
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                Guardian Name <span className="text-red-600">*</span>
-              </label>
-              <input
-                type="text"
-                name="guardianName"
-                required
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-              />
-            </div>
-
-            {/* Guardian Contact */}
-            <div>
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                Guardian Contact <span className="text-red-600">*</span>
-              </label>
-              <input
-                type="tel"
-                name="guardianContact"
-                required
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-                placeholder="+639171234567"
-              />
-            </div>
-
-            {/* Guardian Email */}
-            <div>
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                Guardian Email <span className="text-red-600">*</span>
-              </label>
-              <input
-                type="email"
-                name="guardianEmail"
-                required
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-              />
-            </div>
-
-            {/* Address */}
-            <div className="md:col-span-2">
-              <label className="block text-[13px] font-semibold text-[#1B1F3B] mb-1">
-                Address <span className="text-red-600">*</span>
-              </label>
-              <textarea
-                name="address"
-                required
-                rows={2}
-                className="w-full px-4 py-2 rounded-lg border border-[#E8E2DE] text-[13px] focus:outline-none focus:border-[#6B0A0F]"
-                placeholder="Complete address"
-              />
-            </div>
-          </div>
-
-          {/* Error Message */}
-          {createStudentMutation.isError && (
-            <div className="p-3 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-[12px] text-red-800">
-                Error: {(createStudentMutation.error as any)?.response?.data?.error || 'Failed to create student'}
-              </p>
-            </div>
-          )}
-
-          {/* Buttons */}
-          <div className="flex justify-end gap-3 pt-4">
-            <button
-              type="button"
-              onClick={() => setIsAddModalOpen(false)}
-              className="px-6 py-2.5 rounded-full border border-[#E8E2DE] text-[#1B1F3B] text-[13px] font-semibold hover:bg-[#F4F2EF]"
-              disabled={createStudentMutation.isPending}
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={createStudentMutation.isPending}
-              className="px-6 py-2.5 rounded-full bg-[#6B0A0F] text-white text-[13px] font-semibold hover:bg-[#5A0808] disabled:opacity-50"
-            >
-              {createStudentMutation.isPending ? 'Adding...' : 'Add Student'}
-            </button>
-          </div>
+          <fieldset className="grid sm:grid-cols-2 gap-4">
+            <legend className="sm:col-span-2 text-xs font-bold uppercase tracking-wider text-muted mb-1">Guardian & address</legend>
+            <Field label="Guardian name" required error={errors.guardianName}>
+              <Input value={form.guardianName} onChange={set('guardianName')} invalid={!!errors.guardianName} />
+            </Field>
+            <Field label="Guardian contact" required error={errors.guardianContact}>
+              <Input inputMode="tel" value={form.guardianContact} onChange={set('guardianContact')} placeholder="09XX XXX XXXX" invalid={!!errors.guardianContact} />
+            </Field>
+            <Field label="Guardian email" error={errors.guardianEmail}>
+              <Input type="email" value={form.guardianEmail} onChange={set('guardianEmail')} invalid={!!errors.guardianEmail} />
+            </Field>
+            <Field label="Home address" required error={errors.address}>
+              <Input value={form.address} onChange={set('address')} invalid={!!errors.address} />
+            </Field>
+          </fieldset>
         </form>
       </Modal>
+
+      <ConfirmDialog
+        open={confirm.open}
+        onClose={confirm.close}
+        onConfirm={() => confirm.target && remove.mutate(confirm.target)}
+        loading={remove.isPending}
+        title={`Delete ${confirm.target?.firstName} ${confirm.target?.lastName}?`}
+        message="This removes the student and their portal access. Students with recorded grades can't be deleted — deactivate them instead."
+        confirmLabel="Delete"
+      />
     </DashboardLayout>
   );
 }

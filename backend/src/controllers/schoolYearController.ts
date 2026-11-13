@@ -1,73 +1,48 @@
 import { Request, Response } from 'express';
 import prisma from '../config/database';
-import logger from '../config/logger';
-import { schoolYearSchema, paginationSchema } from '../lib/validation';
+import { audit, getCurrentSchoolYear, HttpError } from '../lib/http';
+import { schoolYearSchema, schoolYearUpdateSchema } from '../lib/validation';
 
-/**
- * GET /api/admin/school-years
- * List all school years
- */
-export async function listSchoolYears(req: Request, res: Response) {
-  try {
-    const schoolYears = await prisma.schoolYear.findMany({
-      orderBy: [{ isCurrent: 'desc' }, { label: 'desc' }],
-      include: {
-        _count: {
-          select: { sections: true },
-        },
-      },
-    });
+/** GET /api/admin/school-years */
+export async function listSchoolYears(_req: Request, res: Response) {
+  const schoolYears = await prisma.schoolYear.findMany({
+    orderBy: { startDate: 'desc' },
+    include: { _count: { select: { sections: true } } },
+  });
 
-    res.json({ schoolYears });
-  } catch (error) {
-    logger.error('List school years error:', error);
-    res.status(500).json({ error: 'Failed to fetch school years' });
+  const studentCounts = await prisma.studentSection.groupBy({
+    by: ['sectionId'],
+    _count: { _all: true },
+  });
+  const sections = await prisma.section.findMany({ select: { id: true, schoolYearId: true } });
+  const perYear = new Map<string, number>();
+  for (const s of sections) {
+    const c = studentCounts.find((x) => x.sectionId === s.id)?._count._all ?? 0;
+    perYear.set(s.schoolYearId, (perYear.get(s.schoolYearId) ?? 0) + c);
   }
+
+  res.json({
+    schoolYears: schoolYears.map((sy) => ({
+      ...sy,
+      sectionCount: sy._count.sections,
+      studentCount: perYear.get(sy.id) ?? 0,
+    })),
+  });
 }
 
-/**
- * GET /api/admin/school-years/current
- * Get the current school year
- */
-export async function getCurrentSchoolYear(req: Request, res: Response) {
-  try {
-    const schoolYear = await prisma.schoolYear.findFirst({
-      where: { isCurrent: true },
-      include: {
-        _count: {
-          select: { sections: true },
-        },
-      },
-    });
-
-    if (!schoolYear) {
-      return res.status(404).json({ error: 'No current school year found' });
-    }
-
-    res.json({ schoolYear });
-  } catch (error) {
-    logger.error('Get current school year error:', error);
-    res.status(500).json({ error: 'Failed to fetch current school year' });
-  }
+/** GET /api/admin/school-years/current */
+export async function getCurrent(_req: Request, res: Response) {
+  const schoolYear = await getCurrentSchoolYear();
+  if (!schoolYear) throw new HttpError(404, 'No school year has been set up yet');
+  res.json({ schoolYear });
 }
 
-/**
- * POST /api/admin/school-years
- * Create a new school year
- */
+/** POST /api/admin/school-years */
 export async function createSchoolYear(req: Request, res: Response) {
-  try {
-    const data = schoolYearSchema.parse(req.body);
-
-    // If this is set as current, unset any other current year
-    if (data.isCurrent) {
-      await prisma.schoolYear.updateMany({
-        where: { isCurrent: true },
-        data: { isCurrent: false },
-      });
-    }
-
-    const schoolYear = await prisma.schoolYear.create({
+  const data = schoolYearSchema.parse(req.body);
+  const schoolYear = await prisma.$transaction(async (tx) => {
+    if (data.isCurrent) await tx.schoolYear.updateMany({ where: { isCurrent: true }, data: { isCurrent: false } });
+    return tx.schoolYear.create({
       data: {
         label: data.label,
         startDate: new Date(data.startDate),
@@ -75,171 +50,48 @@ export async function createSchoolYear(req: Request, res: Response) {
         isCurrent: data.isCurrent,
       },
     });
-
-    logger.info(`School year created: ${schoolYear.label} (current: ${schoolYear.isCurrent})`);
-
-    res.status(201).json({ schoolYear });
-  } catch (error: any) {
-    if (error.code === 'P2002') {
-      return res.status(409).json({ error: 'School year with this label already exists' });
-    }
-    logger.error('Create school year error:', error);
-    res.status(500).json({ error: 'Failed to create school year' });
-  }
+  });
+  await audit(req, 'CREATE', 'SchoolYear', schoolYear.id, undefined, { label: schoolYear.label });
+  res.status(201).json({ schoolYear });
 }
 
-/**
- * POST /api/admin/school-years/:id/set-current
- * Set a school year as current (unset all others)
- */
+/** POST /api/admin/school-years/:id/set-current */
 export async function setCurrentSchoolYear(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
+  const { id } = req.params;
+  const target = await prisma.schoolYear.findUnique({ where: { id } });
+  if (!target) throw new HttpError(404, 'School year not found');
 
-    // Verify the school year exists
-    const schoolYear = await prisma.schoolYear.findUnique({
-      where: { id },
-    });
-
-    if (!schoolYear) {
-      return res.status(404).json({ error: 'School year not found' });
-    }
-
-    // Unset all current years, then set this one
-    await prisma.$transaction([
-      prisma.schoolYear.updateMany({
-        where: { isCurrent: true },
-        data: { isCurrent: false },
-      }),
-      prisma.schoolYear.update({
-        where: { id },
-        data: { isCurrent: true },
-      }),
-    ]);
-
-    logger.info(`School year set as current: ${schoolYear.label}`);
-
-    res.json({ message: 'School year set as current' });
-  } catch (error) {
-    logger.error('Set current school year error:', error);
-    res.status(500).json({ error: 'Failed to set current school year' });
-  }
+  await prisma.$transaction([
+    prisma.schoolYear.updateMany({ where: { isCurrent: true }, data: { isCurrent: false } }),
+    prisma.schoolYear.update({ where: { id }, data: { isCurrent: true } }),
+  ]);
+  await audit(req, 'UPDATE', 'SchoolYear', id, undefined, { isCurrent: true, label: target.label });
+  res.json({ message: `${target.label} is now the current school year` });
 }
 
-/**
- * POST /api/admin/school-years/start-new
- * Start a new school year (creates new year, marks it current, leaves old grades attached)
- */
-export async function startNewSchoolYear(req: Request, res: Response) {
-  try {
-    const { label, startDate, endDate } = req.body;
-
-    if (!label || !startDate || !endDate) {
-      return res.status(400).json({ error: 'Label, start date, and end date are required' });
-    }
-
-    const newYear = await prisma.$transaction(async (tx) => {
-      // Unset any current year
-      await tx.schoolYear.updateMany({
-        where: { isCurrent: true },
-        data: { isCurrent: false },
-      });
-
-      // Create new school year as current
-      return await tx.schoolYear.create({
-        data: {
-          label,
-          startDate: new Date(startDate),
-          endDate: new Date(endDate),
-          isCurrent: true,
-        },
-      });
-    });
-
-    logger.info(`New school year started: ${newYear.label}`);
-
-    res.status(201).json({ schoolYear: newYear });
-  } catch (error: any) {
-    if (error.code === 'P2002') {
-      return res.status(409).json({ error: 'School year with this label already exists' });
-    }
-    logger.error('Start new school year error:', error);
-    res.status(500).json({ error: 'Failed to start new school year' });
-  }
-}
-
-/**
- * PUT /api/admin/school-years/:id
- * Update a school year
- */
+/** PUT /api/admin/school-years/:id */
 export async function updateSchoolYear(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-    const data = schoolYearSchema.partial().parse(req.body);
-
-    // If setting as current, unset others
-    if (data.isCurrent) {
-      await prisma.schoolYear.updateMany({
-        where: { isCurrent: true, id: { not: id } },
-        data: { isCurrent: false },
-      });
-    }
-
-    const schoolYear = await prisma.schoolYear.update({
-      where: { id },
-      data: {
-        ...(data.label && { label: data.label }),
-        ...(data.startDate && { startDate: new Date(data.startDate) }),
-        ...(data.endDate && { endDate: new Date(data.endDate) }),
-        ...(data.isCurrent !== undefined && { isCurrent: data.isCurrent }),
-      },
-    });
-
-    res.json({ schoolYear });
-  } catch (error: any) {
-    if (error.code === 'P2002') {
-      return res.status(409).json({ error: 'School year with this label already exists' });
-    }
-    if (error.code === 'P2025') {
-      return res.status(404).json({ error: 'School year not found' });
-    }
-    logger.error('Update school year error:', error);
-    res.status(500).json({ error: 'Failed to update school year' });
-  }
+  const { id } = req.params;
+  const data = schoolYearUpdateSchema.parse(req.body);
+  const schoolYear = await prisma.schoolYear.update({
+    where: { id },
+    data: {
+      ...(data.label && { label: data.label }),
+      ...(data.startDate && { startDate: new Date(data.startDate) }),
+      ...(data.endDate && { endDate: new Date(data.endDate) }),
+    },
+  });
+  res.json({ schoolYear });
 }
 
-/**
- * DELETE /api/admin/school-years/:id
- * Delete a school year (only if no sections reference it)
- */
+/** DELETE /api/admin/school-years/:id */
 export async function deleteSchoolYear(req: Request, res: Response) {
-  try {
-    const { id } = req.params;
-
-    const schoolYear = await prisma.schoolYear.findUnique({
-      where: { id },
-      include: {
-        _count: {
-          select: { sections: true },
-        },
-      },
-    });
-
-    if (!schoolYear) {
-      return res.status(404).json({ error: 'School year not found' });
-    }
-
-    if (schoolYear._count.sections > 0) {
-      return res.status(400).json({
-        error: 'Cannot delete school year with existing sections',
-      });
-    }
-
-    await prisma.schoolYear.delete({ where: { id } });
-
-    res.json({ message: 'School year deleted' });
-  } catch (error) {
-    logger.error('Delete school year error:', error);
-    res.status(500).json({ error: 'Failed to delete school year' });
-  }
+  const { id } = req.params;
+  const sy = await prisma.schoolYear.findUnique({ where: { id }, include: { _count: { select: { sections: true } } } });
+  if (!sy) throw new HttpError(404, 'School year not found');
+  if (sy.isCurrent) throw new HttpError(400, 'You cannot delete the current school year');
+  if (sy._count.sections > 0) throw new HttpError(400, 'Remove this year’s sections before deleting it');
+  await prisma.schoolYear.delete({ where: { id } });
+  await audit(req, 'DELETE', 'SchoolYear', id, { label: sy.label });
+  res.json({ message: 'School year deleted' });
 }

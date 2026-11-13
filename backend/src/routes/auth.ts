@@ -1,25 +1,13 @@
 import { Router } from 'express';
 import { requireAuth, optionalAuth } from '../middleware/auth';
+import { asyncHandler } from '../lib/http';
 import * as authController from '../controllers/authController';
 
 const router = Router();
 
-/**
- * POST /api/auth/verify
- * Verify Firebase token and check allowlist
- */
-router.post('/verify', authController.verifyToken);
-
-/**
- * GET /api/auth/me
- * Get current user profile
- */
-router.get('/me', requireAuth, authController.getCurrentUser);
-
-/**
- * POST /api/auth/logout
- * Logout (client-side token cleanup, server can revoke if needed)
- */
-router.post('/logout', optionalAuth, authController.logout);
+router.post('/verify', asyncHandler(authController.verifyToken));
+router.get('/me', requireAuth, asyncHandler(authController.getCurrentUser));
+router.post('/logout', optionalAuth, asyncHandler(authController.logout));
+router.get('/dev-accounts', asyncHandler(authController.listDevAccounts));
 
 export default router;

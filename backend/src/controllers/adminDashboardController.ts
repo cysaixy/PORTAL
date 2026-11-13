@@ -1,236 +1,119 @@
-import { Request, Response, NextFunction } from 'express';
+import { Request, Response } from 'express';
 import prisma from '../config/database';
-import logger from '../config/logger';
+import { getCurrentSchoolYear } from '../lib/http';
 
-/**
- * GET /api/admin/dashboard/stats
- * Get comprehensive dashboard statistics for admin
- */
-export const getDashboardStats = async (
-  req: Request,
-  res: Response,
-  next: NextFunction
-) => {
-  try {
-    // Get current school year
-    const currentSchoolYear = await prisma.schoolYear.findFirst({
-      where: { isCurrent: true },
-    });
-
-    if (!currentSchoolYear) {
-      return res.status(404).json({ error: 'No current school year found' });
-    }
-
-    // Count students by grade level
-    const studentsByGrade = await prisma.$queryRaw<
-      Array<{ gradeLevelId: number; count: bigint }>
-    >`
-      SELECT ss."sectionId", COUNT(DISTINCT ss."studentId")::bigint as count
-      FROM "StudentSection" ss
-      INNER JOIN "Section" s ON ss."sectionId" = s.id
-      WHERE s."schoolYearId" = ${currentSchoolYear.id}
-      GROUP BY ss."sectionId"
-    `;
-
-    // Get grade level breakdown
-    const gradeLevels = await prisma.gradeLevel.findMany({
-      orderBy: { number: 'asc' },
-    });
-
-    const gradeCounts = await Promise.all(
-      gradeLevels.map(async (gl) => {
-        const count = await prisma.studentSection.count({
-          where: {
-            section: {
-              gradeLevelId: gl.id,
-              schoolYearId: currentSchoolYear.id,
-            },
-          },
-        });
-        return {
-          grade: `G${gl.number}`,
-          count: count,
-          isSeniorHigh: gl.isSeniorHigh,
-        };
-      })
-    );
-
-    // Count total students
-    const totalStudents = gradeCounts.reduce((sum, g) => sum + g.count, 0);
-    const juniorHighCount = gradeCounts
-      .filter((g) => !g.isSeniorHigh)
-      .reduce((sum, g) => sum + g.count, 0);
-    const seniorHighCount = gradeCounts
-      .filter((g) => g.isSeniorHigh)
-      .reduce((sum, g) => sum + g.count, 0);
-
-    // Count teachers
-    const totalTeachers = await prisma.teacher.count();
-    const teachersWithLoad = await prisma.sectionSubject.groupBy({
-      by: ['teacherId'],
-      where: {
-        section: {
-          schoolYearId: currentSchoolYear.id,
-        },
-      },
-    });
-    const teachersTeaching = teachersWithLoad.length;
-    const teachersWithoutLoad = totalTeachers - teachersTeaching;
-
-    // Count sections
-    const totalSections = await prisma.section.count({
-      where: { schoolYearId: currentSchoolYear.id },
-    });
-
-    // Count subjects and subjects without teachers
-    const totalSubjects = await prisma.subject.count();
-    const subjectsWithTeachers = await prisma.sectionSubject.groupBy({
-      by: ['subjectId'],
-      where: {
-        section: {
-          schoolYearId: currentSchoolYear.id,
-        },
-      },
-    });
-    const subjectsWithoutTeacher = totalSubjects - subjectsWithTeachers.length;
-
-    // Grade submission by grade level
-    const submissionByGrade = await Promise.all(
-      gradeLevels.map(async (gl) => {
-        // Get all section subjects for this grade level
-        const sectionSubjects = await prisma.sectionSubject.findMany({
-          where: {
-            section: {
-              gradeLevelId: gl.id,
-              schoolYearId: currentSchoolYear.id,
-            },
-          },
-          include: {
-            section: {
-              include: {
-                students: true,
-              },
-            },
-          },
-        });
-
-        let totalGradeSlotsNeeded = 0;
-        let totalGradesSubmitted = 0;
-
-        for (const ss of sectionSubjects) {
-          const studentCount = ss.section.students.length;
-          // Assuming 4 quarters per year
-          totalGradeSlotsNeeded += studentCount * 4;
-
-          // Count actual grades submitted
-          const gradesSubmitted = await prisma.grade.count({
-            where: {
-              sectionSubjectId: ss.id,
-              studentSection: {
-                section: {
-                  gradeLevelId: gl.id,
-                },
-              },
-            },
-          });
-          totalGradesSubmitted += gradesSubmitted;
-        }
-
-        return {
-          grade: `G${gl.number}`,
-          submitted: totalGradesSubmitted,
-          total: totalGradeSlotsNeeded,
-        };
-      })
-    );
-
-    // Recent grade activity (last 10 audit logs related to grades)
-    const recentActivity = await prisma.auditLog.findMany({
-      where: {
-        action: {
-          in: ['GRADE_UPDATE', 'GRADE_LOCK', 'GRADE_UNLOCK'],
-        },
-      },
-      orderBy: { createdAt: 'desc' },
-      take: 10,
-      include: {
-        user: {
-          include: {
-            teacher: true,
-          },
-        },
-      },
-    });
-
-    const gradeActivity = recentActivity.map((log) => {
-      const actorName = log.user.teacher
-        ? `${log.user.teacher.firstName} ${log.user.teacher.lastName}`
-        : log.user.email;
-
-      let actionLabel: 'LOCK' | 'UPDATE' | 'UNLOCK' = 'UPDATE';
-      if (log.action === 'GRADE_LOCK') actionLabel = 'LOCK';
-      if (log.action === 'GRADE_UNLOCK') actionLabel = 'UNLOCK';
-
-      const now = new Date();
-      const createdAt = new Date(log.createdAt);
-      const diffMs = now.getTime() - createdAt.getTime();
-      const diffHours = diffMs / (1000 * 60 * 60);
-      const diffDays = diffMs / (1000 * 60 * 60 * 24);
-
-      let timeLabel: string;
-      if (diffHours < 24) {
-        timeLabel = createdAt.toLocaleTimeString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-        });
-      } else if (diffDays < 2) {
-        timeLabel = 'Yesterday';
-      } else {
-        timeLabel = createdAt.toLocaleDateString('en-US', {
-          month: 'short',
-          day: 'numeric',
-        });
-      }
-
-      return {
-        id: log.id,
-        actor: actorName,
-        action: actionLabel,
-        entity: log.entity || '',
-        detail: `${log.action} on ${log.entityId}`,
-        time: timeLabel,
-      };
-    });
-
-    res.json({
-      schoolYear: {
-        id: currentSchoolYear.id,
-        label: currentSchoolYear.label,
-        isCurrent: currentSchoolYear.isCurrent,
-      },
-      students: {
-        total: totalStudents,
-        juniorHigh: juniorHighCount,
-        seniorHigh: seniorHighCount,
-        byGrade: gradeCounts,
-      },
-      teachers: {
-        total: totalTeachers,
-        teaching: teachersTeaching,
-        withoutLoad: teachersWithoutLoad,
-      },
-      sections: {
-        total: totalSections,
-      },
-      subjects: {
-        total: totalSubjects,
-        withoutTeacher: subjectsWithoutTeacher,
-      },
-      gradeSubmission: submissionByGrade,
-      recentActivity: gradeActivity,
-    });
-  } catch (error) {
-    logger.error('Error fetching admin dashboard stats:', error);
-    next(error);
+function describe(log: { action: string; entity: string; after: unknown; before: unknown }) {
+  const a = (log.after ?? log.before ?? {}) as Record<string, any>;
+  const sheet = a.section && a.subject ? `${a.subject} · ${a.section}${a.quarter ? ` · Q${a.quarter}` : ''}` : null;
+  switch (`${log.action}:${log.entity}`) {
+    case 'ENCODE:GradeSheet':
+      return `Encoded ${a.changes?.length ?? ''} grade(s) — ${sheet}`;
+    case 'LOCK:GradeSheet':
+      return `Submitted & locked ${sheet}`;
+    case 'UNLOCK:GradeSheet':
+      return `Unlocked ${sheet ?? `Q${a.quarter} sheet`}`;
+    case 'REQUEST_UNLOCK:GradeSheet':
+      return `Requested unlock — ${sheet}`;
+    case 'REJECT_UNLOCK:GradeSheet':
+      return `Rejected unlock request (Q${a.quarter})`;
+    default:
+      return `${log.action.toLowerCase().replace(/_/g, ' ')} ${log.entity}${a.name ? ` · ${a.name}` : a.title ? ` · ${a.title}` : a.code ? ` · ${a.code}` : ''}`;
   }
-};
+}
+
+/** GET /api/admin/dashboard/stats */
+export async function getDashboardStats(_req: Request, res: Response) {
+  const sy = await getCurrentSchoolYear();
+  if (!sy) {
+    return res.json({ schoolYear: null });
+  }
+  const inYear = { schoolYearId: sy.id };
+
+  const [gradeLevels, sections, teachersTotal, teachersTeaching, subjectsTotal, unassignedStudents, pendingRequests, idReady, studentsTotal, quarterSetting] =
+    await Promise.all([
+      prisma.gradeLevel.findMany({ orderBy: { number: 'asc' } }),
+      prisma.section.findMany({
+        where: inYear,
+        select: {
+          id: true,
+          gradeLevelId: true,
+          adviserId: true,
+          _count: { select: { students: true, subjects: true } },
+        },
+      }),
+      prisma.teacher.count({ where: { user: { isActive: true } } }),
+      prisma.teacher.count({ where: { assignments: { some: { section: inYear } } } }),
+      prisma.subject.count(),
+      prisma.student.count({ where: { user: { isActive: true }, enrollments: { none: { section: inYear } } } }),
+      prisma.unlockRequest.count({ where: { status: 'pending' } }),
+      prisma.student.count({ where: { photoUrl: { not: null }, signatureUrl: { not: null } } }),
+      prisma.student.count({ where: { user: { isActive: true } } }),
+      prisma.setting.findUnique({ where: { key: 'current_quarter' } }),
+    ]);
+  const quarter = Number(quarterSetting?.value ?? 1);
+
+  // Grade submission for the current quarter, per grade level
+  const classes = await prisma.sectionSubject.findMany({
+    where: { section: inYear },
+    select: { id: true, section: { select: { gradeLevelId: true, _count: { select: { students: true } } } } },
+  });
+  const gradeCounts = await prisma.grade.groupBy({
+    by: ['sectionSubjectId', 'locked'],
+    where: { quarter, sectionSubject: { section: inYear } },
+    _count: { _all: true },
+  });
+
+  const byGrade = gradeLevels.map((gl) => {
+    const glSections = sections.filter((s) => s.gradeLevelId === gl.id);
+    const glClasses = classes.filter((c) => c.section.gradeLevelId === gl.id);
+    const needed = glClasses.reduce((n, c) => n + c.section._count.students, 0);
+    const rows = gradeCounts.filter((g) => glClasses.some((c) => c.id === g.sectionSubjectId));
+    return {
+      grade: `G${gl.number}`,
+      name: gl.name,
+      isSeniorHigh: gl.isSeniorHigh,
+      students: glSections.reduce((n, s) => n + s._count.students, 0),
+      sections: glSections.length,
+      encoded: rows.reduce((n, r) => n + r._count._all, 0),
+      locked: rows.filter((r) => r.locked).reduce((n, r) => n + r._count._all, 0),
+      needed,
+    };
+  });
+
+  const recent = await prisma.auditLog.findMany({
+    orderBy: { createdAt: 'desc' },
+    take: 8,
+    include: { user: { select: { email: true, role: true, teacher: { select: { firstName: true, lastName: true } } } } },
+  });
+
+  const enrolled = byGrade.reduce((n, g) => n + g.students, 0);
+  res.json({
+    schoolYear: { id: sy.id, label: sy.label },
+    quarter,
+    students: {
+      enrolled,
+      juniorHigh: byGrade.filter((g) => !g.isSeniorHigh).reduce((n, g) => n + g.students, 0),
+      seniorHigh: byGrade.filter((g) => g.isSeniorHigh).reduce((n, g) => n + g.students, 0),
+      unassigned: unassignedStudents,
+      total: studentsTotal,
+    },
+    teachers: { total: teachersTotal, teaching: teachersTeaching, withoutLoad: Math.max(0, teachersTotal - teachersTeaching) },
+    sections: {
+      total: sections.length,
+      withoutAdviser: sections.filter((s) => !s.adviserId).length,
+      withoutSubjects: sections.filter((s) => s._count.subjects === 0).length,
+    },
+    subjects: { total: subjectsTotal },
+    idCards: { ready: idReady, total: studentsTotal },
+    pendingUnlockRequests: pendingRequests,
+    byGrade,
+    recentActivity: recent.map((log) => ({
+      id: log.id,
+      actor: log.user.teacher ? `${log.user.teacher.firstName} ${log.user.teacher.lastName}` : log.user.email,
+      role: log.user.role,
+      action: log.action,
+      description: describe(log),
+      createdAt: log.createdAt,
+    })),
+  });
+}

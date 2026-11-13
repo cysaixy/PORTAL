@@ -1,87 +1,33 @@
 import { Request, Response } from 'express';
 import prisma from '../config/database';
-import logger from '../config/logger';
+import { audit, HttpError } from '../lib/http';
 import { settingSchema } from '../lib/validation';
 
-/**
- * GET /api/admin/settings
- * List all settings
- */
-export async function listSettings(req: Request, res: Response) {
-  try {
-    const settings = await prisma.setting.findMany({
-      orderBy: { key: 'asc' },
-    });
+/** Settings the UI may edit, with validation per key. */
+const EDITABLE: Record<string, (v: string) => string | null> = {
+  passing_score: (v) => (/^\d+$/.test(v) && +v >= 60 && +v <= 100 ? null : 'Passing score must be a whole number from 60 to 100'),
+  school_name: (v) => (v.length <= 120 ? null : 'Too long'),
+  school_address: (v) => (v.length <= 200 ? null : 'Too long'),
+  current_quarter: (v) => (/^[1-4]$/.test(v) ? null : 'Quarter must be 1-4'),
+};
 
-    res.json({ settings });
-  } catch (error) {
-    logger.error('List settings error:', error);
-    res.status(500).json({ error: 'Failed to fetch settings' });
-  }
+/** GET /api/admin/settings */
+export async function listSettings(_req: Request, res: Response) {
+  const settings = await prisma.setting.findMany({ orderBy: { key: 'asc' } });
+  res.json({ settings: Object.fromEntries(settings.map((s) => [s.key, s.value])) });
 }
 
-/**
- * GET /api/admin/settings/:key
- * Get a single setting
- */
-export async function getSetting(req: Request, res: Response) {
-  try {
-    const { key } = req.params;
-
-    const setting = await prisma.setting.findUnique({
-      where: { key },
-    });
-
-    if (!setting) {
-      return res.status(404).json({ error: 'Setting not found' });
-    }
-
-    res.json({ setting });
-  } catch (error) {
-    logger.error('Get setting error:', error);
-    res.status(500).json({ error: 'Failed to fetch setting' });
-  }
-}
-
-/**
- * PUT /api/admin/settings/:key
- * Upsert a setting
- */
+/** PUT /api/admin/settings/:key */
 export async function upsertSetting(req: Request, res: Response) {
-  try {
-    const { key } = req.params;
-    const data = settingSchema.parse(req.body);
+  const { key } = req.params;
+  const validate = EDITABLE[key];
+  if (!validate) throw new HttpError(400, `Unknown setting: ${key}`);
+  const { value } = settingSchema.parse(req.body);
+  const problem = validate(value);
+  if (problem) throw new HttpError(400, problem);
 
-    const setting = await prisma.setting.upsert({
-      where: { key },
-      update: { value: data.value },
-      create: { key, value: data.value },
-    });
-
-    logger.info(`Setting updated: ${key} = ${data.value}`);
-
-    res.json({ setting });
-  } catch (error: any) {
-    logger.error('Upsert setting error:', error);
-    res.status(500).json({ error: 'Failed to save setting' });
-  }
-}
-
-/**
- * GET /api/admin/settings/passing-score
- * Get the configurable passing score (default 75)
- */
-export async function getPassingScore(req: Request, res: Response) {
-  try {
-    const setting = await prisma.setting.findUnique({
-      where: { key: 'passing_score' },
-    });
-
-    const passingScore = setting ? parseInt(setting.value, 10) : 75;
-
-    res.json({ passingScore });
-  } catch (error) {
-    logger.error('Get passing score error:', error);
-    res.status(500).json({ error: 'Failed to fetch passing score' });
-  }
+  const before = await prisma.setting.findUnique({ where: { key } });
+  const setting = await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
+  await audit(req, 'UPDATE', 'Setting', key, before ? { value: before.value } : undefined, { value });
+  res.json({ setting });
 }

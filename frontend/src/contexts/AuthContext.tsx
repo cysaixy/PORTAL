@@ -1,171 +1,138 @@
-import { createContext, useContext, useEffect, useState, ReactNode } from 'react';
-import {
-  signInWithPopup,
-  signOut as firebaseSignOut,
-  onAuthStateChanged,
-  User as FirebaseUser,
-} from 'firebase/auth';
+import { createContext, ReactNode, useCallback, useContext, useEffect, useState } from 'react';
+import { onAuthStateChanged, signInWithPopup, signOut as firebaseSignOut } from 'firebase/auth';
+import { useQueryClient } from '@tanstack/react-query';
 import { auth, googleProvider, hasConfig } from '../config/firebase';
-import api from '../lib/api';
+import api, { setUnauthorizedHandler } from '../lib/api';
 import { User } from '../types';
 
 interface AuthContextType {
   user: User | null;
-  firebaseUser: FirebaseUser | null;
   loading: boolean;
+  devMode: boolean;
   signInWithGoogle: () => Promise<void>;
-  signOut: () => Promise<void>;
   devModeLogin: (email: string) => Promise<void>;
+  signOut: () => Promise<void>;
+  refreshUser: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 const DEV_MODE = import.meta.env.VITE_DEV_MODE === 'true';
+const DEV_KEY = 'dev_user_email';
+
+function setDevHeader(email: string | null) {
+  if (email) api.defaults.headers.common['x-test-user'] = email;
+  else delete api.defaults.headers.common['x-test-user'];
+}
+
+function messageFrom(error: any): string {
+  return error?.response?.data?.error ?? error?.message ?? 'Sign-in failed';
+}
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [loading, setLoading] = useState(true);
+  const queryClient = useQueryClient();
+
+  const clearSession = useCallback(() => {
+    localStorage.removeItem(DEV_KEY);
+    setDevHeader(null);
+    setUser(null);
+    queryClient.clear();
+  }, [queryClient]);
 
   useEffect(() => {
-    // DEV MODE: Skip Firebase and check localStorage
-    if (DEV_MODE) {
-      const savedEmail = localStorage.getItem('dev_user_email');
-      if (savedEmail) {
-        // Set custom header for API client
-        api.defaults.headers.common['x-test-user'] = savedEmail;
-        
-        // Fetch user from backend
-        api.get('/auth/me')
-          .then(response => setUser(response.data.user))
-          .catch(() => setUser(null))
-          .finally(() => setLoading(false));
-      } else {
+    setUnauthorizedHandler(clearSession);
+    return () => setUnauthorizedHandler(null);
+  }, [clearSession]);
+
+  useEffect(() => {
+    const savedEmail = DEV_MODE ? localStorage.getItem(DEV_KEY) : null;
+    if (savedEmail) {
+      setDevHeader(savedEmail);
+      api
+        .get('/auth/me')
+        .then((r) => setUser(r.data.user))
+        .catch(() => clearSession())
+        .finally(() => setLoading(false));
+      return;
+    }
+
+    if (!hasConfig || !auth) {
+      setLoading(false);
+      return;
+    }
+
+    return onAuthStateChanged(auth, async (fbUser) => {
+      if (!fbUser) {
+        setUser(null);
+        setLoading(false);
+        return;
+      }
+      try {
+        const idToken = await fbUser.getIdToken();
+        const r = await api.post('/auth/verify', { idToken });
+        setUser(r.data.user);
+      } catch {
+        await firebaseSignOut(auth!);
+        setUser(null);
+      } finally {
         setLoading(false);
       }
-      return;
-    }
-
-    // PRODUCTION: Use Firebase
-    if (!hasConfig) {
-      setLoading(false);
-      return;
-    }
-
-    const unsubscribe = onAuthStateChanged(auth!, async (firebaseUser) => {
-      setFirebaseUser(firebaseUser);
-
-      if (firebaseUser) {
-        try {
-          // Get ID token and verify with backend
-          const idToken = await firebaseUser.getIdToken();
-          const response = await api.post('/auth/verify', { idToken });
-          setUser(response.data.user);
-        } catch (error: any) {
-          console.error('Auth verification failed:', error);
-          
-          // If user is not in allowlist, sign them out
-          if (error.response?.status === 403) {
-            await firebaseSignOut(auth!);
-            alert('Access denied. Your email is not registered in the LOA Portal.');
-          }
-          
-          setUser(null);
-        }
-      } else {
-        setUser(null);
-      }
-
-      setLoading(false);
     });
-
-    return unsubscribe;
-  }, []);
+  }, [clearSession]);
 
   const signInWithGoogle = async () => {
-    if (!hasConfig) {
-      alert(
-        'Firebase is not configured. Please create a .env file with your Firebase project credentials (see SETUP.md).'
-      );
-      return;
+    if (!hasConfig || !auth || !googleProvider) {
+      throw new Error('Google sign-in is not configured. Add your Firebase keys to frontend/.env.');
     }
-
+    const result = await signInWithPopup(auth, googleProvider);
     try {
-      setLoading(true);
-      const result = await signInWithPopup(auth!, googleProvider!);
-      
-      // Verify with backend
-      const idToken = await result.user.getIdToken();
-      const response = await api.post('/auth/verify', { idToken });
-      setUser(response.data.user);
-    } catch (error: any) {
-      console.error('Sign in failed:', error);
-      
-      if (error.response?.status === 403) {
-        await firebaseSignOut(auth!);
-        throw new Error('Access denied. Your email is not registered in the LOA Portal.');
-      }
-      
-      throw error;
-    } finally {
-      setLoading(false);
+      const r = await api.post('/auth/verify', { idToken: await result.user.getIdToken() });
+      setUser(r.data.user);
+    } catch (error) {
+      await firebaseSignOut(auth);
+      throw new Error(messageFrom(error));
+    }
+  };
+
+  const devModeLogin = async (email: string) => {
+    setDevHeader(email);
+    try {
+      const r = await api.get('/auth/me');
+      localStorage.setItem(DEV_KEY, email);
+      queryClient.clear();
+      setUser(r.data.user);
+    } catch (error) {
+      setDevHeader(null);
+      throw new Error(messageFrom(error));
     }
   };
 
   const signOut = async () => {
     try {
       await api.post('/auth/logout');
-    } catch (error) {
-      console.error('Logout API call failed:', error);
-    } finally {
-      if (DEV_MODE) {
-        localStorage.removeItem('dev_user_email');
-        delete api.defaults.headers.common['x-test-user'];
-      } else if (hasConfig) {
-        await firebaseSignOut(auth!);
-      }
-      setUser(null);
+    } catch {
+      /* ignore */
     }
+    if (hasConfig && auth?.currentUser) await firebaseSignOut(auth);
+    clearSession();
   };
 
-  const devModeLogin = async (email: string) => {
-    try {
-      setLoading(true);
-      localStorage.setItem('dev_user_email', email);
-      api.defaults.headers.common['x-test-user'] = email;
-      
-      const response = await api.get('/auth/me');
-      setUser(response.data.user);
-    } catch (error: any) {
-      console.error('Dev mode login failed:', error);
-      localStorage.removeItem('dev_user_email');
-      delete api.defaults.headers.common['x-test-user'];
-      throw new Error('Login failed. User not found.');
-    } finally {
-      setLoading(false);
-    }
+  const refreshUser = async () => {
+    const r = await api.get('/auth/me');
+    setUser(r.data.user);
   };
 
   return (
-    <AuthContext.Provider
-      value={{
-        user,
-        firebaseUser,
-        loading,
-        signInWithGoogle,
-        signOut,
-        devModeLogin,
-      }}
-    >
+    <AuthContext.Provider value={{ user, loading, devMode: DEV_MODE, signInWithGoogle, devModeLogin, signOut, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );
 }
 
 export function useAuth() {
-  const context = useContext(AuthContext);
-  if (context === undefined) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
+  const ctx = useContext(AuthContext);
+  if (!ctx) throw new Error('useAuth must be used within an AuthProvider');
+  return ctx;
 }

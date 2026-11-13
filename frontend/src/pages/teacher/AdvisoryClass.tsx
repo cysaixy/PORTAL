@@ -1,82 +1,145 @@
-import { DashboardLayout } from '../../components/DashboardLayout';
-import { TEACHER_NAV } from '../../constants/navigation';
+import { useMemo, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import api from '../../lib/api';
+import clsx from 'clsx';
+import { DashboardLayout } from '../../components/DashboardLayout';
+import { Avatar, Badge, Card, CardHeader, EmptyState, ErrorState, PageLoader, SearchInput, Segmented, StatTile, Table, Toolbar } from '../../components/ui';
+import api, { assetUrl } from '../../lib/api';
+import { plural, score } from '../../lib/format';
+
+interface Advisee {
+  id: string;
+  lrn: string;
+  firstName: string;
+  lastName: string;
+  sex: 'M' | 'F';
+  photoUrl: string | null;
+  guardianName: string;
+  guardianContact: string;
+  quarterAverages: Record<number, number | null>;
+  average: number | null;
+  atRisk: boolean;
+  idReady: boolean;
+}
+interface AdvisoryData {
+  section: { id: string; name: string; gradeLevel: string; strand: string | null; schoolYear: string; capacity: number; subjects: { code: string; title: string; teacher: string }[] } | null;
+  passingScore: number;
+  students: Advisee[];
+}
 
 export default function AdvisoryClass() {
-  const { data: advisoryData, isLoading } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['teacher', 'advisory'],
-    queryFn: async () => {
-      const res = await api.get<{ section: any; students: any[] }>('/teacher/advisory');
-      return res.data;
-    },
+    queryFn: () => api.get<AdvisoryData>('/teacher/advisory').then((r) => r.data),
   });
+  const [search, setSearch] = useState('');
+  const [filter, setFilter] = useState<'all' | 'risk' | 'id'>('all');
+
+  const students = useMemo(
+    () =>
+      (data?.students ?? []).filter(
+        (s) =>
+          `${s.lastName} ${s.firstName} ${s.lrn}`.toLowerCase().includes(search.toLowerCase()) &&
+          (filter === 'all' || (filter === 'risk' && s.atRisk) || (filter === 'id' && !s.idReady))
+      ),
+    [data, search, filter]
+  );
+
+  const sec = data?.section;
+  const all = data?.students ?? [];
+  const classAvg = all.filter((s) => s.average !== null).map((s) => s.average!);
 
   return (
     <DashboardLayout
-      title="Advisory class"
-      subtitle="Monitor your advisory section's performance."
-      nav={TEACHER_NAV}
-      schoolYear="SY 2024–2025"
+      title={sec ? `Advisory · ${sec.name}` : 'Advisory class'}
+      subtitle={sec ? `${sec.gradeLevel}${sec.strand ? ` · ${sec.strand}` : ''} · SY ${sec.schoolYear}` : undefined}
     >
-      <div className="col-span-12">
-        <div className="bg-white border border-[#E8E2DE] rounded-[16px] p-6">
-          {isLoading ? (
-            <div className="flex items-center justify-center py-12">
-              <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-[#6B0A0F]"></div>
-            </div>
-          ) : advisoryData?.section ? (
-            <>
-              <div className="mb-6">
-                <h2 className="text-[18px] font-800 text-[#1B1F3B]">{advisoryData.section.name}</h2>
-                <p className="text-[12px] text-[#6B6B6B]">
-                  {advisoryData.section.gradeLevel.name} • {advisoryData.students?.length || 0} students
-                </p>
-              </div>
+      {isLoading ? (
+        <PageLoader />
+      ) : error ? (
+        <Card><ErrorState error={error} onRetry={refetch} /></Card>
+      ) : !sec ? (
+        <Card><EmptyState icon="users" title="No advisory class" description="You aren't assigned as adviser of a section this school year." /></Card>
+      ) : (
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
+            <StatTile tone="brand" icon="users" label="Students" value={all.length} hint={`${all.filter((s) => s.sex === 'M').length} male · ${all.filter((s) => s.sex === 'F').length} female`} />
+            <StatTile icon="chart" label="Class average" value={score(classAvg.length ? Math.round((classAvg.reduce((a, b) => a + b, 0) / classAvg.length) * 100) / 100 : null)} hint="Across all encoded grades" />
+            <StatTile icon="alert" label={`Below ${data!.passingScore}`} value={all.filter((s) => s.atRisk).length} hint="Students who may need intervention" />
+            <StatTile tone="gold" icon="idcard" label="ID ready" value={`${all.filter((s) => s.idReady).length}/${all.length}`} hint="Photo and signature uploaded" />
+          </div>
 
-              {advisoryData.students && advisoryData.students.length > 0 ? (
-                <div className="border border-[#E8E2DE] rounded-[8px] overflow-hidden">
-                  <table className="w-full text-left text-[13px]">
-                    <thead>
-                      <tr className="bg-[#F4F2EF]">
-                        <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase">LRN</th>
-                        <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase">Name</th>
-                        <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase">Sex</th>
-                        <th className="px-4 py-3 text-[11px] font-semibold text-[#6B6B6B] uppercase text-right">
-                          General Average
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#E8E2DE]">
-                      {advisoryData.students.map((student: any) => (
-                        <tr key={student.id} className="hover:bg-[#FFF1C2]/30">
-                          <td className="px-4 py-3 text-[#6B6B6B]">{student.lrn}</td>
-                          <td className="px-4 py-3 text-[#1B1F3B] font-medium">
-                            {student.firstName} {student.lastName}
-                          </td>
-                          <td className="px-4 py-3 text-[#6B6B6B]">{student.sex}</td>
-                          <td className="px-4 py-3 text-right text-[#1B1F3B] font-semibold">
-                            {student.generalAverage || '—'}
-                          </td>
-                        </tr>
+          <Card>
+            <Toolbar>
+              <Segmented
+                value={filter}
+                onChange={setFilter}
+                options={[
+                  { value: 'all', label: 'All', count: all.length },
+                  { value: 'risk', label: 'At risk', count: all.filter((s) => s.atRisk).length },
+                  { value: 'id', label: 'Missing ID', count: all.filter((s) => !s.idReady).length },
+                ]}
+              />
+              <SearchInput value={search} onChange={setSearch} placeholder="Search student…" />
+            </Toolbar>
+            {students.length === 0 ? (
+              <EmptyState icon="checkCircle" title="Nobody here" description="No students match this filter." />
+            ) : (
+              <Table>
+                <thead className="border-b border-line">
+                  <tr>
+                    <th className="th">Student</th>
+                    {[1, 2, 3, 4].map((q) => <th key={q} className="th text-center hidden md:table-cell">Q{q}</th>)}
+                    <th className="th text-center">Average</th>
+                    <th className="th">Guardian</th>
+                    <th className="th">ID</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-line">
+                  {students.map((s) => (
+                    <tr key={s.id} className={clsx('hover:bg-canvas/60', s.atRisk && 'bg-danger-50/40')}>
+                      <td className="td">
+                        <div className="flex items-center gap-3">
+                          <Avatar name={`${s.firstName} ${s.lastName}`} src={assetUrl(s.photoUrl)} size={32} />
+                          <div>
+                            <p className="font-medium">{s.lastName}, {s.firstName}</p>
+                            <p className="text-[11px] text-muted">{s.lrn}</p>
+                          </div>
+                        </div>
+                      </td>
+                      {[1, 2, 3, 4].map((q) => (
+                        <td key={q} className={clsx('td text-center tabular-nums hidden md:table-cell', s.quarterAverages[q] !== null && s.quarterAverages[q]! < data!.passingScore && 'text-danger-600 font-semibold')}>
+                          {score(s.quarterAverages[q])}
+                        </td>
                       ))}
-                    </tbody>
-                  </table>
-                </div>
-              ) : (
-                <p className="text-center text-[#6B6B6B] py-8">No students enrolled in this section yet.</p>
-              )}
-            </>
-          ) : (
-            <div className="text-center py-8">
-              <p className="text-[#6B6B6B] mb-2">You are not assigned as an adviser to any section.</p>
-              <p className="text-[12px] text-[#6B6B6B]">
-                Contact your administrator to be assigned as a section adviser.
-              </p>
-            </div>
-          )}
+                      <td className="td text-center">
+                        <span className={clsx('font-bold tabular-nums', s.atRisk && 'text-danger-600')}>{score(s.average)}</span>
+                      </td>
+                      <td className="td">
+                        <p className="truncate max-w-[160px]">{s.guardianName}</p>
+                        <a href={`tel:${s.guardianContact}`} className="text-xs text-brand-800 hover:underline">{s.guardianContact}</a>
+                      </td>
+                      <td className="td">{s.idReady ? <Badge tone="success" icon="check">Ready</Badge> : <Badge tone="warn">Missing</Badge>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </Table>
+            )}
+          </Card>
+
+          <Card>
+            <CardHeader title="Subject teachers" description={plural(sec.subjects.length, 'subject')} />
+            <ul className="grid sm:grid-cols-2 gap-x-6 divide-y divide-line sm:divide-y-0">
+              {sec.subjects.map((s) => (
+                <li key={s.code} className="flex items-center gap-3 py-2 sm:border-b sm:border-line">
+                  <Badge className="min-w-[84px] justify-center">{s.code}</Badge>
+                  <span className="flex-1 text-sm truncate">{s.title}</span>
+                  <span className="text-xs text-muted">{s.teacher}</span>
+                </li>
+              ))}
+            </ul>
+          </Card>
         </div>
-      </div>
+      )}
     </DashboardLayout>
   );
 }
